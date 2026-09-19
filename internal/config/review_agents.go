@@ -69,14 +69,6 @@ func validateReviewModelID(model string) error {
 	return nil
 }
 
-// ValidateReviewAgent is the exported single-entry counterpart to the
-// global review_agents validator. It is intentionally shared by the per-run
-// CLI override and the config loader.
-func ValidateReviewAgent(entry ReviewAgent) error {
-	_, err := NormalizeReviewAgent(entry)
-	return err
-}
-
 func validateReviewAgents(roles map[string]ReviewAgent) error {
 	for role, entry := range roles {
 		if role != "reviewer" && role != "fixer" {
