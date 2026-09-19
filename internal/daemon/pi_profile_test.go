@@ -3,9 +3,11 @@ package daemon
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -115,6 +117,43 @@ func TestPiProfileInvalidLaunchDoesNotSupersedeActiveRun(t *testing.T) {
 				t.Fatalf("bad request changed active validation: cancelled=%v runs=%d", cancelled, len(runs))
 			}
 		})
+	}
+}
+
+func TestRerunProfileConflictsWithInheritedReviewerBeforeSupersession(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	repo, head := setupTestGitRepo(t, p, d, "rerun-reviewer-profile")
+	reviewerJSON, err := config.MarshalReviewAgent(&config.ReviewAgent{Agent: types.AgentPi, Model: "xai/grok-4.6"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "main", head, head, nil, "", "", "", "", reviewerJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewRunManager(d, p, nil)
+	cancelled := false
+	m.cancels[selected.ID] = func(error) { cancelled = true }
+	pin := &agentcfg.PiProfile{Model: "openai-codex/gpt-5.4", Effort: agentcfg.EffortHigh}
+	if _, err := m.HandleRerun(context.Background(), repo.ID, "main", selected.ID, nil, "", "", "", pin); err == nil {
+		t.Fatal("rerun combined inherited reviewer with Pi profile")
+	} else if !strings.Contains(err.Error(), "reviewer selection conflicts") {
+		t.Fatalf("rerun failed for the wrong reason: %v", err)
+	}
+	runs, err := d.GetRunsByRepo(repo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cancelled || len(runs) != 1 || runs[0].ID != selected.ID {
+		t.Fatalf("conflicting rerun changed active validation: cancelled=%v runs=%d", cancelled, len(runs))
 	}
 }
 
