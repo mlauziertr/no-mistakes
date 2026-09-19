@@ -108,6 +108,10 @@ func TestReviewAgentSnapshotRejectsCredentialShapedModelWithoutEcho(t *testing.T
 		{types.AgentPi, "aws/ASIA" + strings.Repeat("Q", 16), strings.Repeat("Q", 16)},
 		{types.AgentCodex, "xapp-1-" + strings.Repeat("r", 32), strings.Repeat("r", 32)},
 		{types.AgentPi, "slack/xapp-1-" + strings.Repeat("s", 32), strings.Repeat("s", 32)},
+		{types.AgentCodex, "xoxe.xoxb-1-" + strings.Repeat("t", 32), strings.Repeat("t", 32)},
+		{types.AgentPi, "slack/xoxe-1-" + strings.Repeat("u", 32), strings.Repeat("u", 32)},
+		{types.AgentCodex, "xwfp-" + strings.Repeat("v", 32), strings.Repeat("v", 32)},
+		{types.AgentPi, "slack/xwfp-" + strings.Repeat("w", 32), strings.Repeat("w", 32)},
 	}
 	for _, prefix := range []string{"glpat-", "gloas-", "gldt-", "glrt-", "glrtr-", "glcbt-", "glptt-", "glft-", "glimt-", "glagent-", "glwt-", "glsoat-", "glffct-"} {
 		secret := strings.Repeat("h", 32)
