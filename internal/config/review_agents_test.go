@@ -85,6 +85,24 @@ func TestReviewAgentSnapshotAcceptsCatalogIDsForNonPiHarnesses(t *testing.T) {
 	}
 }
 
+func TestPerRunReviewAgentRejectsCursorRoutesWithoutChangingGlobalSupport(t *testing.T) {
+	for _, name := range []types.AgentName{types.AgentCursor, "acp:cursor"} {
+		if _, err := MarshalReviewAgent(&ReviewAgent{Agent: name}); err == nil || !strings.Contains(err.Error(), "not supported for per-run reviewer selection") {
+			t.Fatalf("per-run reviewer %q error = %v", name, err)
+		}
+		global, err := LoadGlobalFromBytes([]byte("review_agents:\n  reviewer: {agent: \"" + string(name) + "\"}\n"))
+		if err != nil {
+			t.Fatalf("global reviewer %q was rejected: %v", name, err)
+		}
+		if global.ReviewAgents["reviewer"].Agent != name {
+			t.Fatalf("global reviewer = %q, want %q", global.ReviewAgents["reviewer"].Agent, name)
+		}
+	}
+	if _, err := MarshalReviewAgent(&ReviewAgent{Agent: types.AgentPi, Model: "xai/grok-4.6"}); err != nil {
+		t.Fatalf("supported per-run reviewer was rejected: %v", err)
+	}
+}
+
 func TestReviewAgentSnapshotRejectsCredentialShapedModelWithoutEcho(t *testing.T) {
 	tests := []struct {
 		agent  types.AgentName

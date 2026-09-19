@@ -130,6 +130,22 @@ func TestInvalidReviewerLaunchDoesNotSupersedeActiveRun(t *testing.T) {
 			reviewer:    config.ReviewAgent{Agent: types.AgentPi},
 			wantFailure: "load global config",
 		},
+		{
+			name: "cursor alias rejected before mutation",
+			global: func(fake, _ string) string {
+				return "agent: claude\nagent_path_override:\n  claude: " + fake + "\n"
+			},
+			reviewer:    config.ReviewAgent{Agent: types.AgentCursor},
+			wantFailure: "not supported for per-run reviewer selection",
+		},
+		{
+			name: "cursor ACP target rejected before mutation",
+			global: func(fake, _ string) string {
+				return "agent: claude\nagent_path_override:\n  claude: " + fake + "\n"
+			},
+			reviewer:    config.ReviewAgent{Agent: "acp:cursor"},
+			wantFailure: "not supported for per-run reviewer selection",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := paths.WithRoot(t.TempDir())

@@ -34,6 +34,9 @@ func NormalizeReviewAgent(entry ReviewAgent) (ReviewAgent, error) {
 	if !agentcfg.Known(entry.Agent) {
 		return ReviewAgent{}, fmt.Errorf("reviewer.agent must name an explicit harness, got %q", entry.Agent)
 	}
+	if target, ok := types.ACPTargetFor(entry.Agent); ok && target == "cursor" {
+		return ReviewAgent{}, fmt.Errorf("cursor is not supported for per-run reviewer selection")
+	}
 	if entry.Model != "" {
 		if err := validateReviewModelID(entry.Model); err != nil {
 			return ReviewAgent{}, err

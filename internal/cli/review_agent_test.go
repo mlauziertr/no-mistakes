@@ -44,6 +44,20 @@ func TestReviewerFromFlagsRequiresExplicitReviewerForTuning(t *testing.T) {
 	}
 }
 
+func TestReviewerFromFlagsRejectsCursorRoutes(t *testing.T) {
+	for _, reviewerName := range []string{"cursor", "acp:cursor"} {
+		cmd := &cobra.Command{}
+		var reviewer, model, effort string
+		bindReviewerFlags(cmd, &reviewer, &model, &effort)
+		if err := cmd.ParseFlags([]string{"--reviewer", reviewerName}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := reviewerFromFlags(cmd, reviewer, model, effort); err == nil || !strings.Contains(err.Error(), "not supported for per-run reviewer selection") {
+			t.Fatalf("reviewerFromFlags(%q) error = %v", reviewerName, err)
+		}
+	}
+}
+
 func TestReviewerFromFlagsNoOverride(t *testing.T) {
 	cmd := &cobra.Command{}
 	var reviewer, model, effort string
