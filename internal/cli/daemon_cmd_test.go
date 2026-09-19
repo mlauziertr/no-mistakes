@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -134,6 +135,35 @@ func TestProofAndPRBaseBranchPushOptionsRoundTrip(t *testing.T) {
 	if _, err := parseValidationGenerationPushOptions([]string{generationOpt, formatValidationGenerationPushOption("generation-8")}); err == nil {
 		t.Fatal("conflicting validation generations were accepted")
 	}
+}
+
+func TestReviewerPushOptionRoundTrip(t *testing.T) {
+	reviewer := &config.ReviewAgent{Agent: "pi", Model: "xai/grok-4.6"}
+	option, err := formatReviewerPushOption(reviewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := parseReviewerPushOptions([]string{option})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !config.ReviewAgentsEqual(got, reviewer) {
+		t.Fatalf("reviewer = %#v, want %#v", got, reviewer)
+	}
+	if _, err := parseReviewerPushOptions([]string{option, formatReviewerPushOptionForTest(t, reviewer, "other/model")}); err == nil {
+		t.Fatal("conflicting reviewer selections were accepted")
+	}
+}
+
+func formatReviewerPushOptionForTest(t *testing.T, reviewer *config.ReviewAgent, model string) string {
+	t.Helper()
+	other := *reviewer
+	other.Model = model
+	option, err := formatReviewerPushOption(&other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return option
 }
 
 func TestReconciledPreviousHeadPushOptionRoundTrip(t *testing.T) {

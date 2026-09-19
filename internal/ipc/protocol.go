@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -72,6 +73,7 @@ func (e *RPCError) Error() string { return e.Message }
 // opt into a nonce-bound launch proof.
 type PushReceivedParams struct {
 	PiProfile *agentcfg.PiProfile `json:"pi_profile,omitempty"`
+	Reviewer  *config.ReviewAgent `json:"reviewer,omitempty"`
 	// Gate is the absolute path to the gate bare repo.
 	Gate                 string           `json:"gate"`
 	Ref                  string           `json:"ref"`
@@ -94,6 +96,7 @@ type PushReceivedParams struct {
 // caller never receives a proof for a drifting creation context.
 type StartFreshRunParams struct {
 	PiProfile *agentcfg.PiProfile `json:"pi_profile,omitempty"`
+	Reviewer  *config.ReviewAgent `json:"reviewer,omitempty"`
 
 	RepoID               string           `json:"repo_id"`
 	Branch               string           `json:"branch"`
@@ -109,6 +112,7 @@ type StartFreshRunParams struct {
 // Generic run/status surfaces never expose launch bindings or intent digests.
 type ClaimLaunchReceiptParams struct {
 	PiProfile *agentcfg.PiProfile `json:"pi_profile,omitempty"`
+	Reviewer  *config.ReviewAgent `json:"reviewer,omitempty"`
 
 	RepoID               string `json:"repo_id"`
 	Branch               string `json:"branch"`
@@ -170,6 +174,7 @@ type GetActiveRunParams struct {
 // leaves the new run to perform fresh inference.
 type RerunParams struct {
 	PiProfile *agentcfg.PiProfile `json:"pi_profile,omitempty"`
+	Reviewer  *config.ReviewAgent `json:"reviewer,omitempty"`
 
 	RepoID        string           `json:"repo_id"`
 	Branch        string           `json:"branch"`
@@ -242,6 +247,7 @@ type PushReceivedResult struct {
 // generation and intent digest are persisted; raw intent is never included.
 type LaunchReceipt struct {
 	PiProfile *agentcfg.PiProfile `json:"pi_profile,omitempty"`
+	Reviewer  *config.ReviewAgent `json:"reviewer,omitempty"`
 
 	RunID                string `json:"run_id"`
 	Disposition          string `json:"disposition"`
@@ -322,6 +328,7 @@ type ShutdownResult struct {
 // RunInfo is the IPC representation of a pipeline run.
 type RunInfo struct {
 	PiProfile *agentcfg.PiProfile `json:"pi_profile,omitempty"`
+	Reviewer  *config.ReviewAgent `json:"reviewer,omitempty"`
 
 	ID               string          `json:"id"`
 	RepoID           string          `json:"repo_id"`

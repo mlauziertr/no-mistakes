@@ -16,6 +16,7 @@ func newRerunCmd() *cobra.Command {
 	var intent string
 	var baseBranch string
 	var model, effort string
+	var reviewer, reviewerModel, reviewerEffort string
 	cmd := &cobra.Command{
 		Use:   "rerun",
 		Short: "Rerun the pipeline for the current branch",
@@ -28,6 +29,13 @@ func newRerunCmd() *cobra.Command {
 			profile, err := piProfileFromFlags(cmd, model, effort)
 			if err != nil {
 				return err
+			}
+			reviewerSelection, err := reviewerFromFlags(cmd, reviewer, reviewerModel, reviewerEffort)
+			if err != nil {
+				return err
+			}
+			if reviewerSelection != nil && profile != nil {
+				return fmt.Errorf("--reviewer* cannot be combined with the all-duty --model/--effort Pi profile")
 			}
 			return trackCommand("rerun", func() error {
 				p, d, err := openResources()
@@ -73,7 +81,7 @@ func newRerunCmd() *cobra.Command {
 					return err
 				}
 				var result ipc.RerunResult
-				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repo.ID, Branch: branch, Intent: intent, PRBaseBranch: baseBranch, CallerHeadSHA: callerHead, PiProfile: profile}, &result); err != nil {
+				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repo.ID, Branch: branch, Intent: intent, PRBaseBranch: baseBranch, CallerHeadSHA: callerHead, PiProfile: profile, Reviewer: reviewerSelection}, &result); err != nil {
 					return fmt.Errorf("rerun pipeline: %w", err)
 				}
 
@@ -85,6 +93,7 @@ func newRerunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&intent, "intent", "", "explicit intent for this rerun (overrides inherited intent or fresh inference)")
 	cmd.Flags().StringVar(&baseBranch, "base-branch", "", "integration branch for the PR for this rerun only (overrides inherited per-run base branch)")
 	bindPiProfileFlags(cmd, &model, &effort)
+	bindReviewerFlags(cmd, &reviewer, &reviewerModel, &reviewerEffort)
 	return cmd
 }
 

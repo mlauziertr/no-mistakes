@@ -118,6 +118,56 @@ func writeCapturingPiAgent(t *testing.T, dir, capturePath string) string {
 // to build the pipeline agent inline and never apply WithReviewAgents. Both role
 // models can only appear in the captured argv if that wrapper is applied on this
 // path; before the fix both review-loop turns ran on the default profile.
+func TestPushReceivedPersistsExplicitReviewerSelection(t *testing.T) {
+	capturePath := filepath.Join(t.TempDir(), "pi-argv.log")
+	piBin := writeCapturingPiAgent(t, t.TempDir(), capturePath)
+
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&reviewRoleProbeStep{}}
+	})
+	configYAML := "agent: pi\n" +
+		"agent_path_override:\n  pi: " + piBin + "\n" +
+		"agent_config:\n  pi: {model: author-model, effort: high}\n"
+	if err := os.WriteFile(p.ConfigFile(), []byte(configYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	repo, headSHA := setupTestGitRepo(t, p, d, "reviewer-selection-repo")
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	selection := &config.ReviewAgent{Agent: types.AgentPi, Model: "xai/grok-4.6"}
+	var result ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir(repo.ID), Ref: "refs/heads/main", Old: strings.Repeat("0", 40), New: headSHA, Reviewer: selection,
+	}, &result); err != nil {
+		t.Fatal(err)
+	}
+	if run := waitForRunTerminalState(t, d, result.RunID); run.Status != types.RunCompleted {
+		t.Fatalf("run status = %q, want completed (error: %v)", run.Status, run.Error)
+	}
+	stored, err := d.GetRun(result.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.ReviewAgentJSON == nil {
+		t.Fatal("run did not persist reviewer selection")
+	}
+	got, err := config.ParseReviewAgentJSON(*stored.ReviewAgentJSON)
+	if err != nil || !config.ReviewAgentsEqual(got, selection) {
+		t.Fatalf("stored reviewer = %#v, parse error = %v", got, err)
+	}
+	argv, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(argv), "--model xai/grok-4.6") {
+		t.Fatalf("reviewer model was not routed; argv = %q", argv)
+	}
+}
+
 func TestPushReceivedRoutesReviewRolesToIndependentProfiles(t *testing.T) {
 	capturePath := filepath.Join(t.TempDir(), "pi-argv.log")
 	piBin := writeCapturingPiAgent(t, t.TempDir(), capturePath)

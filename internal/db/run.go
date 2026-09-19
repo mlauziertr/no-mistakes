@@ -85,11 +85,14 @@ type Run struct {
 	PRBaseBranch *string
 	// PiProfile is immutable launch selection; nil retains legacy live config.
 	PiProfile *agentcfg.PiProfile
-	CreatedAt int64
-	UpdatedAt int64
+	// ReviewAgentJSON is an immutable per-run reviewer override. A nil value
+	// retains the live/global review-agent selection for legacy launches.
+	ReviewAgentJSON *string
+	CreatedAt       int64
+	UpdatedAt       int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, pi_profile, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, pi_profile, review_agent_json, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
@@ -102,7 +105,7 @@ func scanRun(row interface {
 		&r.CustodyReturnedAt, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
 		&r.LaunchNonce, &r.LaunchValidationGeneration, &r.LaunchIntentDigest, &r.LaunchReceiptClaimedAt,
-		&r.PRBaseBranch, &r.PiProfile,
+		&r.PRBaseBranch, &r.PiProfile, &r.ReviewAgentJSON,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
 }
@@ -174,6 +177,36 @@ func (d *DB) InsertRunWithIntentAndLaunchNonce(repoID, branch, headSHA, baseSHA 
 		return nil, fmt.Errorf("insert run: %w", err)
 	}
 	return r, nil
+}
+
+// SetRunReviewAgent durably records the one explicit reviewer override a run
+// may carry. The write is create-once: a recovery or duplicate launch can
+// replay the same value, but neither can replace an already selected reviewer.
+func (d *DB) SetRunReviewAgent(runID, selectionJSON string) error {
+	selectionJSON = strings.TrimSpace(selectionJSON)
+	if selectionJSON == "" {
+		return nil
+	}
+	result, err := d.sql.Exec(`UPDATE runs SET review_agent_json = ?, updated_at = ? WHERE id = ? AND review_agent_json IS NULL`, selectionJSON, now(), runID)
+	if err != nil {
+		return fmt.Errorf("set run reviewer: %w", err)
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("set run reviewer: %w", err)
+	} else if affected > 0 {
+		return nil
+	}
+	var existing *string
+	if err := d.sql.QueryRow(`SELECT review_agent_json FROM runs WHERE id = ?`, runID).Scan(&existing); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("set run reviewer: run %s not found", runID)
+		}
+		return fmt.Errorf("read run reviewer: %w", err)
+	}
+	if existing != nil && *existing == selectionJSON {
+		return nil
+	}
+	return fmt.Errorf("run %s already has a different reviewer selection", runID)
 }
 
 // RunWorktree is one run's recorded worktree placement, identified by the run

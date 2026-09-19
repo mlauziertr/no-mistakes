@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS runs (
     launch_receipt_claimed_at INTEGER,
     pr_base_branch       TEXT,
     pi_profile           TEXT,
+    review_agent_json    TEXT,
     created_at           INTEGER NOT NULL,
     updated_at           INTEGER NOT NULL
 );
@@ -281,6 +282,11 @@ var migrationStatements = []string{
 	// --base-branch). Nullable: absent means fall back to repo config and the
 	// forge default branch.
 	`ALTER TABLE runs ADD COLUMN pr_base_branch TEXT`,
+	// A per-run reviewer override is immutable once selected. NULL retains
+	// legacy/global review-agent resolution; a non-NULL value is a strict JSON
+	// snapshot owned by the launch that created the run.
+	`ALTER TABLE runs ADD COLUMN review_agent_json TEXT`,
+	`CREATE TRIGGER IF NOT EXISTS runs_review_agent_immutable BEFORE UPDATE OF review_agent_json ON runs WHEN OLD.review_agent_json IS NOT NULL AND NEW.review_agent_json IS NOT OLD.review_agent_json BEGIN SELECT RAISE(ABORT, 'run reviewer selection is immutable'); END`,
 	// The start of the currently displayed execution/fix round is separate
 	// from started_at, which remains the whole-step clock.
 	`ALTER TABLE step_results ADD COLUMN round_started_at INTEGER`,

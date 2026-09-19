@@ -1257,6 +1257,13 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if !run.PiProfile.Matches(p.PiProfile) {
 			return nil, fmt.Errorf("conflicting launch_nonce: Pi profile differs from run pin")
 		}
+		reviewer, err := normalizeRunReviewer(p.Reviewer)
+		if err != nil {
+			return nil, err
+		}
+		if !runReviewerMatches(run, reviewer) {
+			return nil, fmt.Errorf("conflicting launch_nonce: reviewer selection differs from run pin")
+		}
 		if !launchPRBaseBranchMatches(run, prBaseBranch) {
 			return nil, conflictingLaunchPRBaseBranch(p.LaunchNonce)
 		}
@@ -1306,7 +1313,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch, p.CallerHeadSHA, p.PiProfile)
+		runID, err := mgr.HandleRerunWithReviewer(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch, p.CallerHeadSHA, p.Reviewer, p.PiProfile)
 		if err != nil {
 			return nil, err
 		}
@@ -1430,6 +1437,12 @@ func gateContextResult(result gatecontext.Result) ipc.GateContextResult {
 }
 
 func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
+	var reviewer *config.ReviewAgent
+	if r.ReviewAgentJSON != nil {
+		if parsed, err := config.ParseReviewAgentJSON(*r.ReviewAgentJSON); err == nil {
+			reviewer = parsed
+		}
+	}
 	info := &ipc.RunInfo{
 		ID:                 r.ID,
 		RepoID:             r.RepoID,
@@ -1444,6 +1457,7 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 		CIReadyNoCI:        r.CIReadyNoCI,
 		PRBaseBranch:       r.PRBaseBranch,
 		PiProfile:          r.PiProfile,
+		Reviewer:           reviewer,
 		AwaitingAgent:      r.AwaitingAgentSince != nil,
 		AwaitingAgentSince: r.AwaitingAgentSince,
 		CreatedAt:          r.CreatedAt,

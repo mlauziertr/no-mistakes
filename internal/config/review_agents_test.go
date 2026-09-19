@@ -64,3 +64,27 @@ func TestReviewAgentsOmitted(t *testing.T) {
 		t.Fatalf("unexpected roles: %+v", cfg.ReviewAgents)
 	}
 }
+
+func TestReviewAgentSnapshotRoundTripsStrictly(t *testing.T) {
+	entry := &ReviewAgent{Agent: types.AgentPi, Model: " xai/grok-4.6 ", Effort: agentcfg.EffortHigh}
+	encoded, err := MarshalReviewAgent(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParseReviewAgentJSON(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := &ReviewAgent{Agent: types.AgentPi, Model: "xai/grok-4.6", Effort: agentcfg.EffortHigh}
+	if !ReviewAgentsEqual(got, want) {
+		t.Fatalf("round trip = %#v, want %#v", got, want)
+	}
+	for _, invalid := range []string{
+		`{"agent":"pi","model":"xai/grok-4.6","unexpected":true}`,
+		`{"agent":"not-a-harness","model":"xai/grok-4.6"}`,
+	} {
+		if _, err := ParseReviewAgentJSON(invalid); err == nil {
+			t.Fatalf("ParseReviewAgentJSON(%s) succeeded", invalid)
+		}
+	}
+}
