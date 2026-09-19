@@ -17,8 +17,9 @@ var reviewModelCredential = regexp.MustCompile(`(?i)^(?:sk-(?:proj-|svcacct-)?[A
 
 // ReviewAgent pins one review-loop role to an explicit harness. Empty model or
 // effort inherits agent_config for that harness; native argument overrides win.
-// A per-run reviewer override uses the same shape and is stored without
-// credentials or prompt content.
+// A per-run reviewer override uses the same shape and is stored only after its
+// model passes the identifier and credential-shape checks below. It never
+// contains prompt content.
 type ReviewAgent struct {
 	Agent  types.AgentName `yaml:"agent" json:"agent"`
 	Model  string          `yaml:"model" json:"model,omitempty"`
@@ -97,8 +98,8 @@ func validateReviewAgents(roles map[string]ReviewAgent) error {
 	return nil
 }
 
-// MarshalReviewAgent encodes an explicit per-run reviewer selection without
-// credentials or prompt material. An empty result means no per-run override.
+// MarshalReviewAgent encodes a validated explicit per-run reviewer selection
+// without prompt material. An empty result means no per-run override.
 func MarshalReviewAgent(entry *ReviewAgent) (string, error) {
 	if entry == nil {
 		return "", nil
