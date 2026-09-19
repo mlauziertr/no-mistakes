@@ -25,6 +25,22 @@ func TestReviewerFromFlagsDefaultsToPiForGrokModel(t *testing.T) {
 	}
 }
 
+func TestReviewerFromFlagsAcceptsCursorGrokModel(t *testing.T) {
+	cmd := &cobra.Command{}
+	var reviewer, model, effort string
+	bindReviewerFlags(cmd, &reviewer, &model, &effort)
+	if err := cmd.ParseFlags([]string{"--reviewer", "cursor", "--reviewer-model", "cursor-grok-4.6-high"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := reviewerFromFlags(cmd, reviewer, model, effort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.Agent != types.AgentCursor || got.Model != "cursor-grok-4.6-high" {
+		t.Fatalf("reviewer = %#v", got)
+	}
+}
+
 func TestReviewerFromFlagsRejectsCredentialShapedModel(t *testing.T) {
 	cmd := &cobra.Command{}
 	var reviewer, model, effort string

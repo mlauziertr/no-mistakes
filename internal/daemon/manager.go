@@ -316,7 +316,7 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot stri
 	if steps.IsDemoMode() {
 		return agent.NewNoop(), nil
 	}
-	primary, err := newConfiguredAgent(ctx, cfg, evidenceRoot, lookPath, environment)
+	primary, err := newConfiguredAgent(ctx, cfg, evidenceRoot, lookPath, environment, "")
 	if err != nil {
 		return nil, err
 	}
@@ -326,7 +326,7 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot stri
 		if !ok {
 			continue
 		}
-		next, err := newConfiguredAgent(ctx, cfg.ForReviewAgent(entry), evidenceRoot, lookPath, environment)
+		next, err := newConfiguredAgent(ctx, cfg.ForReviewAgent(entry), evidenceRoot, lookPath, environment, role)
 		if err != nil {
 			_ = primary.Close()
 			for _, existing := range roles {
@@ -339,9 +339,12 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot stri
 	return agent.WithReviewAgents(primary, roles["reviewer"], roles["fixer"]), nil
 }
 
-func newConfiguredAgent(ctx context.Context, cfg *config.Config, evidenceRoot string, lookPath func(string) (string, error), environment runenv.Overlay) (agent.Agent, error) {
-	if err := cfg.ResolveAgent(ctx, lookPath); err != nil {
-		return nil, err
+func newConfiguredAgent(ctx context.Context, cfg *config.Config, evidenceRoot string, lookPath func(string) (string, error), environment runenv.Overlay, role string) (agent.Agent, error) {
+	isolatedCursorReviewer := cfg.DisableProjectSettings && role == "reviewer" && cfg.Agent == types.AgentCursor
+	if !isolatedCursorReviewer {
+		if err := cfg.ResolveAgent(ctx, lookPath); err != nil {
+			return nil, err
+		}
 	}
 	agents := cfg.Agents
 	if len(agents) == 0 {
@@ -349,9 +352,23 @@ func newConfiguredAgent(ctx context.Context, cfg *config.Config, evidenceRoot st
 	}
 	created := make([]agent.Agent, 0, len(agents))
 	for _, name := range agents {
-		next, err := agent.NewWithOptions(name, cfg.AgentPathFor(name), cfg.AgentArgsFor(name), agent.Options{
+		agentBin := cfg.AgentPathFor(name)
+		reviewerOnly := role == "reviewer" && name == types.AgentCursor && cfg.DisableProjectSettings
+		if reviewerOnly {
+			alias, ok := types.ACPAliasFor(name)
+			if !ok {
+				return nil, fmt.Errorf("isolated Cursor reviewer has no default command")
+			}
+			resolved, err := lookPath(alias.DefaultCommandBinary())
+			if err != nil {
+				return nil, fmt.Errorf("resolve isolated Cursor reviewer: %w", err)
+			}
+			agentBin = resolved
+		}
+		next, err := agent.NewWithOptions(name, agentBin, cfg.AgentArgsFor(name), agent.Options{
 			ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
 			DisableProjectSettings: cfg.DisableProjectSettings,
+			ReviewerOnly:           reviewerOnly,
 			Profile:                cfg.AgentProfileFor(name),
 			Environment:            environment,
 		})

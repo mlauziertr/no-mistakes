@@ -21,10 +21,12 @@ func optOutAgent(t *testing.T, name types.AgentName, extraArgs []string) Agent {
 }
 
 // TestNeutralizesGateInstructions_OnlyVerifiedHarnessesUnderOptOut is the core
-// fail-closed contract: under the opt-out, only codex, claude, and pi (whose
-// suppression knobs are empirically verified) neutralize the target repo's
-// project agent settings/instructions; every other harness reports false and is
-// refused rather than launched with project instructions loaded.
+// fail-closed contract for the ordinary harnesses: under the opt-out, codex,
+// claude, and pi (whose suppression knobs are empirically verified) neutralize
+// the target repo's project agent settings/instructions; every other ordinary
+// harness reports false and is refused rather than launched with project
+// instructions loaded. The reviewer-only Cursor snapshot route is covered in
+// cursor_test.go because it needs a distinct construction option.
 func TestNeutralizesGateInstructions_OnlyVerifiedHarnessesUnderOptOut(t *testing.T) {
 	for _, name := range []types.AgentName{types.AgentCodex, types.AgentClaude, types.AgentPi} {
 		if !NeutralizesGateInstructions(optOutAgent(t, name, nil)) {
@@ -68,7 +70,8 @@ func TestNeutralizesGateInstructions_FalseWithoutOptOut(t *testing.T) {
 }
 
 // TestEnsureGateNeutralized_RefusesUnsupportedUnderOptOut proves the gate fails
-// closed for an unsupported harness and admits codex, claude, and pi.
+// closed for an unsupported harness and admits codex, claude, and pi. The
+// reviewer-only Cursor route has a separate read-only construction contract.
 func TestEnsureGateNeutralized_RefusesUnsupportedUnderOptOut(t *testing.T) {
 	if err := EnsureGateNeutralized(optOutAgent(t, types.AgentCodex, nil)); err != nil {
 		t.Errorf("codex must pass the gate under opt-out: %v", err)

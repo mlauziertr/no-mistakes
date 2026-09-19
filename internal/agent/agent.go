@@ -194,8 +194,9 @@ func NeutralizesGateInstructions(a Agent) bool {
 // the target checkout does not neutralize that checkout's project
 // agent-instruction files. Callers must invoke it before launching any gate
 // agent so an unverified harness is refused with a clear error rather than run
-// unneutralized in the target checkout. Only codex, claude, pi, and acp:omp have
-// a verified neutralization knob today.
+// unneutralized in the target checkout. Codex, Claude, Pi, acp:omp, and the
+// reviewer-only direct Cursor adapter have verified isolation; Cursor's direct
+// route is not admitted as a primary or fixer.
 func EnsureGateNeutralized(a Agent) error {
 	if a == nil {
 		return fmt.Errorf("no gate agent configured")
@@ -205,9 +206,9 @@ func EnsureGateNeutralized(a Agent) error {
 	}
 	return fmt.Errorf("gate agent %q does not neutralize the target repository's project "+
 		"agent-instruction files (AGENTS.md/CLAUDE.md); refusing to launch it in the target "+
-		"checkout. Only codex, claude, pi, and acp:omp have a verified neutralization knob (and only "+
-		"when it is not overridden by agent_args_override or an acp_registry_overrides entry); set "+
-		"'agent' to codex, claude, pi, or acp:omp in ~/.no-mistakes/config.yaml", a.Name())
+		"checkout. Use codex, claude, pi, acp:omp, or the reviewer-only isolated cursor "+
+		"route (and do not override its command); set the primary 'agent' to codex, claude, "+
+		"pi, or acp:omp in ~/.no-mistakes/config.yaml", a.Name())
 }
 
 // LifecycleEvent describes process-level activity for an agent invocation.
@@ -292,12 +293,17 @@ type Options struct {
 	ACPRegistryOverrides map[string]string
 	Environment          runenv.Overlay
 	// DisableProjectSettings, when true, asks a supported adapter (codex,
-	// claude, pi, and the acp:omp target) to launch with the target repo's
-	// project-level agent settings/instructions suppressed. It is the resolved,
+	// claude, pi, acp:omp, or the reviewer-only direct Cursor route) to launch
+	// with the target repo's project-level agent settings/instructions
+	// suppressed. It is the resolved,
 	// trusted-only opt-out from config.Config; adapters without a verified
 	// suppression knob ignore it and are refused separately by
 	// EnsureGateNeutralized when the opt-out is on.
 	DisableProjectSettings bool
+	// ReviewerOnly admits the isolated Cursor direct adapter only for the
+	// read-only per-run reviewer role. It must never be set for the primary or
+	// fixer, whose edits must land in the real pipeline worktree.
+	ReviewerOnly bool
 	// Profile is the harness-neutral model/effort selection (see
 	// internal/agentcfg). NewWithOptions maps it down to whatever mechanism the
 	// named harness actually uses - injected argv flags for most CLIs, the
@@ -1294,6 +1300,26 @@ func New(name types.AgentName, bin string, extraArgs []string) (Agent, error) {
 
 // NewWithOptions creates an agent by name with additional backend-specific options.
 func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts Options) (Agent, error) {
+	// Cursor's native CLI has a real, client-side workspace-context exclusion
+	// switch, but the account/model route used by this project rejects that
+	// switch. Under the trusted project-settings opt-out, the reviewer-only
+	// direct adapter instead runs from a sanitized disposable clone. A Cursor
+	// primary/fixer is never allowed to use that read-only snapshot path.
+	if name == types.AgentCursor && opts.DisableProjectSettings {
+		if !opts.ReviewerOnly {
+			return nil, fmt.Errorf("cursor reviewer isolation is read-only and reviewer-only; refusing Cursor as a primary or fixer under disable_project_settings")
+		}
+		if strings.TrimSpace(opts.ACPRegistryOverrides["cursor"]) != "" {
+			return nil, fmt.Errorf("cursor reviewer isolation cannot use an acp_registry_overrides.cursor command")
+		}
+		return &cursorAgent{
+			bin:                    bin,
+			model:                  opts.Profile.Model,
+			disableProjectSettings: true,
+			reviewerOnly:           true,
+			subprocessContext:      newSubprocessContext(opts.Environment),
+		}, nil
+	}
 	// Fail closed on a knob this harness cannot express. Config load performs
 	// the same check, but this is the funnel every caller reaches - including
 	// eval replay and programmatic callers that build a profile directly - so a

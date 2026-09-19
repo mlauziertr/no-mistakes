@@ -28,17 +28,22 @@ type ReviewAgent struct {
 // it is compared or recovered.
 func NormalizeReviewAgent(entry ReviewAgent) (ReviewAgent, error) {
 	entry.Model = strings.TrimSpace(entry.Model)
-	if entry.Model != "" {
-		// Per-run selections cross the push-option and durable-run boundaries.
-		// Keep that value on the same identifier-only surface as Pi profiles so
-		// a URL or credential-shaped model can never be echoed into those logs.
-		profile := agentcfg.PiProfile{Model: entry.Model, Effort: entry.Effort}
-		if err := profile.ValidateRequest(); err != nil {
-			return ReviewAgent{}, fmt.Errorf("reviewer model: %w", err)
-		}
-	}
 	if !agentcfg.Known(entry.Agent) {
 		return ReviewAgent{}, fmt.Errorf("reviewer.agent must name an explicit harness, got %q", entry.Agent)
+	}
+	if entry.Model != "" {
+		// Per-run selections cross the push-option and durable-run boundaries.
+		// Keep every harness on an identifier-only surface so a URL or
+		// credential-shaped model can never be echoed into those logs. Pi has
+		// the stronger provider/model contract; Cursor's catalog uses a bare ID.
+		if entry.Agent == types.AgentPi {
+			profile := agentcfg.PiProfile{Model: entry.Model, Effort: entry.Effort}
+			if err := profile.ValidateRequest(); err != nil {
+				return ReviewAgent{}, fmt.Errorf("reviewer model: %w", err)
+			}
+		} else if err := validateReviewModelID(entry.Model); err != nil {
+			return ReviewAgent{}, err
+		}
 	}
 	if err := agentcfg.Validate(entry.Agent, agentcfg.Profile{Model: entry.Model, Effort: entry.Effort}); err != nil {
 		return ReviewAgent{}, fmt.Errorf("invalid reviewer selection: %w", err)
@@ -46,7 +51,26 @@ func NormalizeReviewAgent(entry ReviewAgent) (ReviewAgent, error) {
 	return entry, nil
 }
 
+func validateReviewModelID(model string) error {
+	if len(model) > 256 {
+		return fmt.Errorf("reviewer model must be an identifier")
+	}
+	for _, part := range strings.Split(model, "/") {
+		if part == "" || part == "." || part == ".." || strings.HasPrefix(part, "-") {
+			return fmt.Errorf("reviewer model must be an identifier")
+		}
+		for _, c := range part {
+			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("._-", c)) {
+				return fmt.Errorf("reviewer model must be an identifier")
+			}
+		}
+	}
+	return nil
+}
+
 // ValidateReviewAgent is the exported single-entry counterpart to the
+// global review_agents validator. It is intentionally shared by the per-run
+// CLI override and the config loader.
 // global review_agents validator. It is intentionally shared by the per-run
 // CLI override and the config loader.
 func ValidateReviewAgent(entry ReviewAgent) error {

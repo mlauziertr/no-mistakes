@@ -65,6 +65,31 @@ func TestNewPipelineAgent_OptOut_AdmitsOMPACPTarget(t *testing.T) {
 // fail-closed contract at the daemon wiring: under the opt-out, a harness with no
 // verified neutralization knob is refused rather than launched with project
 // instructions loaded.
+func TestNewPipelineAgent_OptOut_AdmitsIsolatedCursorReviewer(t *testing.T) {
+	cfg := &config.Config{
+		Agent:                  types.AgentPi,
+		DisableProjectSettings: true,
+		ReviewAgents: map[string]config.ReviewAgent{
+			"reviewer": {Agent: types.AgentCursor, Model: "cursor-grok-4.6-high"},
+		},
+	}
+	ag, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !agent.NeutralizesGateInstructions(ag) {
+		t.Fatal("isolated Cursor reviewer must report neutralized")
+	}
+	_ = ag.Close()
+
+	if _, err := newPipelineAgent(context.Background(), &config.Config{
+		Agent:                  types.AgentCursor,
+		DisableProjectSettings: true,
+	}, t.TempDir(), fakeLookPath, runenv.Overlay{}); err == nil || !strings.Contains(err.Error(), "reviewer-only") {
+		t.Fatalf("Cursor primary should be refused under opt-out: %v", err)
+	}
+}
+
 func TestNewPipelineAgent_OptOut_RefusesUnverifiedHarness(t *testing.T) {
 	for _, name := range []types.AgentName{types.AgentGrok, types.AgentOpenCode, types.AgentCopilot} {
 		cfg := &config.Config{Agent: name, DisableProjectSettings: true}
