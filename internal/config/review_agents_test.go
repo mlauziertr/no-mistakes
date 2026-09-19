@@ -1,9 +1,11 @@
 package config
 
 import (
+	"strings"
+	"testing"
+
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/types"
-	"testing"
 )
 
 func TestReviewAgentsProfilesAreIndependent(t *testing.T) {
@@ -80,6 +82,30 @@ func TestReviewAgentSnapshotAcceptsCatalogIDsForNonPiHarnesses(t *testing.T) {
 	}
 	if _, err := MarshalReviewAgent(&ReviewAgent{Agent: types.AgentCodex, Model: "https://secret@example.test/model"}); err == nil {
 		t.Fatal("credential-shaped non-Pi reviewer model was accepted")
+	}
+}
+
+func TestReviewAgentSnapshotRejectsCredentialShapedModelWithoutEcho(t *testing.T) {
+	credentials := []string{
+		"sk-" + "proj-" + strings.Repeat("a", 32),
+		"github_" + "pat_" + strings.Repeat("b", 40),
+		"ghp_" + strings.Repeat("c", 36),
+	}
+	for _, credential := range credentials {
+		_, err := MarshalReviewAgent(&ReviewAgent{Agent: types.AgentCodex, Model: credential})
+		if err == nil {
+			t.Fatal("credential-shaped reviewer model was accepted")
+		}
+		if strings.Contains(err.Error(), credential) {
+			t.Fatal("rejected reviewer model was echoed")
+		}
+		_, err = LoadGlobalFromBytes([]byte("review_agents:\n  reviewer: {agent: codex, model: " + credential + "}\n"))
+		if err == nil {
+			t.Fatal("credential-shaped configured reviewer model was accepted")
+		}
+		if strings.Contains(err.Error(), credential) {
+			t.Fatal("rejected configured reviewer model was echoed")
+		}
 	}
 }
 
