@@ -16,6 +16,26 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+func TestResolveReviewAgentRPCNormalizesSelection(t *testing.T) {
+	p, _ := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+	})
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	request := &config.ReviewAgent{Agent: types.AgentPi, Model: " xai/grok-4.6 "}
+	var resolved config.ReviewAgent
+	if err := client.Call(ipc.MethodResolveReviewAgent, request, &resolved); err != nil {
+		t.Fatal(err)
+	}
+	want := &config.ReviewAgent{Agent: types.AgentPi, Model: "xai/grok-4.6"}
+	if !config.ReviewAgentsEqual(&resolved, want) {
+		t.Fatalf("resolved reviewer = %#v, want %#v", resolved, *want)
+	}
+}
+
 func TestPipelineReviewRolesUseIndependentPiProfiles(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "pi")

@@ -1294,6 +1294,14 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return cfg.ResolvePiProfile(&request)
 	})
 
+	srv.Handle(ipc.MethodResolveReviewAgent, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		var request config.ReviewAgent
+		if err := json.Unmarshal(params, &request); err != nil {
+			return nil, fmt.Errorf("invalid reviewer request")
+		}
+		return config.NormalizeReviewAgent(request)
+	})
+
 	srv.Handle(ipc.MethodStartFreshRun, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
 		if err := refuseNested(ctx, false); err != nil {
 			return nil, err

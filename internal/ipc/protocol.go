@@ -13,6 +13,7 @@ import (
 const (
 	MethodPushReceived       = "push_received"
 	MethodResolvePiProfile   = "resolve_pi_profile"
+	MethodResolveReviewAgent = "resolve_review_agent"
 	MethodStartFreshRun      = "start_fresh_run"
 	MethodClaimLaunchReceipt = "claim_launch_receipt"
 	MethodGetRun             = "get_run"
