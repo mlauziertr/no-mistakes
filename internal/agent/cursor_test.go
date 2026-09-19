@@ -68,7 +68,7 @@ printf '%%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(prompt) != "Read files only under " + string(isolatedPath) {
+	if string(prompt) != "Read files only under "+string(isolatedPath) {
 		t.Fatalf("emitted prompt = %q", prompt)
 	}
 	if _, err := os.Stat(strings.TrimSpace(string(isolatedPath))); !errors.Is(err, os.ErrNotExist) {
@@ -186,51 +186,81 @@ func runTestGit(t *testing.T, gitBin, dir string, args ...string) {
 }
 
 func TestCursorSanitizedHistoryPreservesReviewDiff(t *testing.T) {
- repo := newCursorTestRepo(t)
- gitBin, err := testgit.RealGit()
- if err != nil { t.Fatal(err) }
- gitOutput := func(dir string, args ...string) string {
-  t.Helper()
-  cmd := exec.Command(gitBin, args...)
-  cmd.Dir = dir
-  cmd.Env = git.NonInteractiveEnv(dir)
-  output, err := cmd.CombinedOutput()
-  if err != nil { t.Fatalf("git %v: %v: %s", args, err, output) }
-  return strings.TrimSpace(string(output))
- }
- base := gitOutput(repo, "rev-parse", "HEAD")
- for path, content := range map[string]string{
-  "nested/AGENTS.md": "historical hostile instructions",
-  "nested/.cursor/rules/evil.mdc": "historical hostile instructions",
- } {
-  full := filepath.Join(repo, path)
-  if err := os.MkdirAll(filepath.Dir(full), 0700); err != nil { t.Fatal(err) }
-  if err := os.WriteFile(full, []byte(content), 0600); err != nil { t.Fatal(err) }
- }
- runTestGit(t, gitBin, repo, "add", ".")
- runTestGit(t, gitBin, repo, "commit", "-qm", "instruction-only update")
- instructionCommit := gitOutput(repo, "rev-parse", "HEAD")
- if err := os.RemoveAll(filepath.Join(repo, "nested")); err != nil { t.Fatal(err) }
- if err := os.WriteFile(filepath.Join(repo, "src.go"), []byte("package changed\n"), 0600); err != nil { t.Fatal(err) }
- runTestGit(t, gitBin, repo, "add", "-A")
- runTestGit(t, gitBin, repo, "commit", "-qm", "source update")
- head := gitOutput(repo, "rev-parse", "HEAD")
- workspace, err := newCursorIsolatedWorkspace(context.Background(), repo, git.NonInteractiveEnv(repo))
- if err != nil { t.Fatal(err) }
- defer workspace.Close()
- for _, sha := range []string{base, instructionCommit, head} {
-  if workspace.Commits[sha] == "" { t.Fatalf("commit %s lost", sha) }
- }
- if status := gitOutput(workspace.Path, "status", "--porcelain"); status != "" { t.Fatalf("dirty snapshot: %s", status) }
- if diff := gitOutput(workspace.Path, "diff", workspace.Commits[base], workspace.Commits[head], "--", "src.go"); diff != gitOutput(repo, "diff", base, head, "--", "src.go") { t.Fatalf("review diff changed: %s", diff) }
- if diff := gitOutput(workspace.Path, "diff", workspace.Commits[base], workspace.Commits[instructionCommit]); diff != "" { t.Fatalf("instruction diff survived: %s", diff) }
- objects := gitOutput(workspace.Path, "cat-file", "--batch-all-objects", "--batch-check=%(objectname) %(objecttype)")
- for _, line := range strings.Split(objects, "\n") {
-  fields := strings.Fields(line)
-  if fields[1] != "blob" { continue }
-  content := gitOutput(workspace.Path, "cat-file", "blob", fields[0])
-  if content != "package src" && content != "package changed" { t.Fatalf("unexpected blob survived: %q", content) }
- }
- if remotes := gitOutput(workspace.Path, "remote"); remotes != "" { t.Fatalf("snapshot has remotes: %s", remotes) }
- if status := gitOutput(repo, "status", "--porcelain"); status != "" { t.Fatalf("source modified: %s", status) }
+	repo := newCursorTestRepo(t)
+	gitBin, err := testgit.RealGit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitOutput := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command(gitBin, args...)
+		cmd.Dir = dir
+		cmd.Env = git.NonInteractiveEnv(dir)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+		return strings.TrimSpace(string(output))
+	}
+	base := gitOutput(repo, "rev-parse", "HEAD")
+	for path, content := range map[string]string{
+		"nested/AGENTS.md":              "historical hostile instructions",
+		"nested/.cursor/rules/evil.mdc": "historical hostile instructions",
+	} {
+		full := filepath.Join(repo, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runTestGit(t, gitBin, repo, "add", ".")
+	runTestGit(t, gitBin, repo, "commit", "-qm", "instruction-only update")
+	instructionCommit := gitOutput(repo, "rev-parse", "HEAD")
+	if err := os.RemoveAll(filepath.Join(repo, "nested")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "src.go"), []byte("package changed\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runTestGit(t, gitBin, repo, "add", "-A")
+	runTestGit(t, gitBin, repo, "commit", "-qm", "source update")
+	head := gitOutput(repo, "rev-parse", "HEAD")
+	workspace, err := newCursorIsolatedWorkspace(context.Background(), repo, git.NonInteractiveEnv(repo))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer workspace.Close()
+	for _, sha := range []string{base, instructionCommit, head} {
+		if workspace.Commits[sha] == "" {
+			t.Fatalf("commit %s lost", sha)
+		}
+	}
+	if status := gitOutput(workspace.Path, "status", "--porcelain"); status != "" {
+		t.Fatalf("dirty snapshot: %s", status)
+	}
+	if diff := gitOutput(workspace.Path, "diff", workspace.Commits[base], workspace.Commits[head], "--", "src.go"); diff != gitOutput(repo, "diff", base, head, "--", "src.go") {
+		t.Fatalf("review diff changed: %s", diff)
+	}
+	if diff := gitOutput(workspace.Path, "diff", workspace.Commits[base], workspace.Commits[instructionCommit]); diff != "" {
+		t.Fatalf("instruction diff survived: %s", diff)
+	}
+	objects := gitOutput(workspace.Path, "cat-file", "--batch-all-objects", "--batch-check=%(objectname) %(objecttype)")
+	for _, line := range strings.Split(objects, "\n") {
+		fields := strings.Fields(line)
+		if fields[1] != "blob" {
+			continue
+		}
+		content := gitOutput(workspace.Path, "cat-file", "blob", fields[0])
+		if content != "package src" && content != "package changed" {
+			t.Fatalf("unexpected blob survived: %q", content)
+		}
+	}
+	if remotes := gitOutput(workspace.Path, "remote"); remotes != "" {
+		t.Fatalf("snapshot has remotes: %s", remotes)
+	}
+	if status := gitOutput(repo, "status", "--porcelain"); status != "" {
+		t.Fatalf("source modified: %s", status)
+	}
 }
