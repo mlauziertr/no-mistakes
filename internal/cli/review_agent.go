@@ -15,26 +15,29 @@ import (
 // the review fixer. The daemon persists the resulting selection on the run.
 func bindReviewerFlags(cmd *cobra.Command, reviewer, model, effort *string) {
 	cmd.Flags().StringVar(reviewer, "reviewer", "", "review harness for this run only (for example pi)")
-	cmd.Flags().StringVar(model, "reviewer-model", "", "model for the per-run reviewer (defaults to Pi when set without --reviewer)")
+	cmd.Flags().StringVar(model, "reviewer-model", "", "model for the per-run reviewer (requires --reviewer)")
 	cmd.Flags().StringVar(effort, "reviewer-effort", "", "reasoning effort for the per-run reviewer")
 }
 
 func reviewerFromFlags(cmd *cobra.Command, reviewer, model, effort string) (*config.ReviewAgent, error) {
-	changed := cmd.Flags().Changed("reviewer") || cmd.Flags().Changed("reviewer-model") || cmd.Flags().Changed("reviewer-effort")
+	reviewerChanged := cmd.Flags().Changed("reviewer")
+	modelChanged := cmd.Flags().Changed("reviewer-model")
+	effortChanged := cmd.Flags().Changed("reviewer-effort")
+	changed := reviewerChanged || modelChanged || effortChanged
 	if !changed {
 		return nil, nil
 	}
 	name := types.AgentName(strings.TrimSpace(reviewer))
-	if name == "" {
-		name = types.AgentPi
-	}
-	if cmd.Flags().Changed("reviewer") && strings.TrimSpace(reviewer) == "" {
+	if reviewerChanged && name == "" {
 		return nil, fmt.Errorf("--reviewer must not be empty")
 	}
-	if cmd.Flags().Changed("reviewer-model") && strings.TrimSpace(model) == "" {
+	if !reviewerChanged {
+		return nil, fmt.Errorf("--reviewer is required with --reviewer-model or --reviewer-effort")
+	}
+	if modelChanged && strings.TrimSpace(model) == "" {
 		return nil, fmt.Errorf("--reviewer-model must not be empty")
 	}
-	if cmd.Flags().Changed("reviewer-effort") && strings.TrimSpace(effort) == "" {
+	if effortChanged && strings.TrimSpace(effort) == "" {
 		return nil, fmt.Errorf("--reviewer-effort must not be empty")
 	}
 	parsedEffort, err := agentcfg.ParseEffort(effort)
