@@ -1247,7 +1247,15 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err != nil {
 			return nil, err
 		}
-		run, claimed, err := d.ClaimLaunchReceipt(p.RepoID, p.Branch, p.LaunchNonce, p.SubmittedHeadSHA, p.ValidationGeneration, p.IntentDigest, prBaseBranch, p.PiProfile)
+		reviewer, err := normalizeRunReviewer(p.Reviewer)
+		if err != nil {
+			return nil, err
+		}
+		reviewerJSON, err := config.MarshalReviewAgent(reviewer)
+		if err != nil {
+			return nil, err
+		}
+		run, claimed, err := d.ClaimLaunchReceipt(p.RepoID, p.Branch, p.LaunchNonce, p.SubmittedHeadSHA, p.ValidationGeneration, p.IntentDigest, prBaseBranch, reviewerJSON, p.PiProfile)
 		if err != nil {
 			return nil, fmt.Errorf("claim launch receipt: %w", err)
 		}
@@ -1256,10 +1264,6 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		}
 		if !run.PiProfile.Matches(p.PiProfile) {
 			return nil, fmt.Errorf("conflicting launch_nonce: Pi profile differs from run pin")
-		}
-		reviewer, err := normalizeRunReviewer(p.Reviewer)
-		if err != nil {
-			return nil, err
 		}
 		if !runReviewerMatches(run, reviewer) {
 			return nil, fmt.Errorf("conflicting launch_nonce: reviewer selection differs from run pin")

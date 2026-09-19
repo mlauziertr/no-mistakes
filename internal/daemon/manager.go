@@ -869,6 +869,10 @@ func (m *RunManager) startFreshLaunchWithReviewer(ctx context.Context, repo *db.
 	if reviewer != nil && request != nil {
 		return ipc.LaunchReceipt{}, fmt.Errorf("per-run reviewer selection conflicts with --model/--effort Pi profile")
 	}
+	reviewerJSON, err := config.MarshalReviewAgent(reviewer)
+	if err != nil {
+		return ipc.LaunchReceipt{}, err
+	}
 	if err := request.ValidateRequest(); err != nil {
 		return ipc.LaunchReceipt{}, err
 	}
@@ -900,7 +904,7 @@ func (m *RunManager) startFreshLaunchWithReviewer(ctx context.Context, repo *db.
 			if !existing.PiProfile.Matches(request) {
 				return "", fmt.Errorf("conflicting launch_nonce: Pi profile differs from run pin")
 			}
-			if reviewer != nil && !runReviewerMatches(existing, reviewer) {
+			if !runReviewerMatches(existing, reviewer) {
 				return "", fmt.Errorf("conflicting launch_nonce: reviewer selection differs from run pin")
 			}
 			if !launchPRBaseBranchMatches(existing, storedPRBaseBranch) {
@@ -922,7 +926,7 @@ func (m *RunManager) startFreshLaunchWithReviewer(ctx context.Context, repo *db.
 				receipt = replayed
 				return existing.ID, nil
 			}
-			claimedRun, claimed, err := m.db.ClaimLaunchReceipt(repo.ID, branch, launchNonce, headSHA, validationGeneration, requestDigest, storedPRBaseBranch)
+			claimedRun, claimed, err := m.db.ClaimLaunchReceipt(repo.ID, branch, launchNonce, headSHA, validationGeneration, requestDigest, storedPRBaseBranch, reviewerJSON)
 			if err != nil {
 				return "", err
 			}
@@ -973,7 +977,7 @@ func (m *RunManager) startFreshLaunchWithReviewer(ctx context.Context, repo *db.
 				return "", err
 			}
 		} else {
-			claimedRun, claimed, err := m.db.ClaimLaunchReceipt(repo.ID, branch, launchNonce, headSHA, validationGeneration, requestDigest, storedPRBaseBranch)
+			claimedRun, claimed, err := m.db.ClaimLaunchReceipt(repo.ID, branch, launchNonce, headSHA, validationGeneration, requestDigest, storedPRBaseBranch, reviewerJSON)
 			if err != nil {
 				return "", err
 			}
@@ -1387,6 +1391,11 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		trackStartFailure("invalid_reviewer")
 		return "", fmt.Errorf("per-run reviewer selection conflicts with --model/--effort Pi profile")
 	}
+	reviewerJSON, err := config.MarshalReviewAgent(reviewer)
+	if err != nil {
+		trackStartFailure("invalid_reviewer")
+		return "", err
+	}
 	// ResolvePiProfile checks the global agent list; trusted default-branch
 	// agent selection is checked next because it can still replace that list
 	// with Claude or mixed fallbacks after merge.
@@ -1431,7 +1440,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		return "", err
 	}
 
-	run, err := m.db.InsertRunWithIntentAndLaunchNonce(repo.ID, branch, headSHA, baseSHA, runIntent, launchNonce, validationGeneration, intentDigest, storedPRBaseBranch, pin)
+	run, err := m.db.InsertRunWithIntentAndLaunchNonce(repo.ID, branch, headSHA, baseSHA, runIntent, launchNonce, validationGeneration, intentDigest, storedPRBaseBranch, reviewerJSON, pin)
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
@@ -1573,16 +1582,6 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
 	if reviewer != nil {
 		applyRunReviewer(cfg, reviewer)
-		selectionJSON, err := config.MarshalReviewAgent(reviewer)
-		if err != nil {
-			m.db.UpdateRunError(run.ID, fmt.Sprintf("record reviewer: %s", err))
-			return "", err
-		}
-		if err := m.db.SetRunReviewAgent(run.ID, selectionJSON); err != nil {
-			m.db.UpdateRunError(run.ID, fmt.Sprintf("record reviewer: %s", err))
-			trackStartFailure("record_reviewer")
-			return "", fmt.Errorf("record reviewer: %w", err)
-		}
 	}
 	if run.PiProfile != nil {
 		if err := cfg.ValidatePiProfileAgents(); err != nil {

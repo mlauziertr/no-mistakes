@@ -126,13 +126,13 @@ func (d *DB) InsertRun(repoID, branch, headSHA, baseSHA string) (*Run, error) {
 }
 
 func (d *DB) InsertRunWithIntent(repoID, branch, headSHA, baseSHA string, intent *RunIntent, prBaseBranch string) (*Run, error) {
-	return d.InsertRunWithIntentAndLaunchNonce(repoID, branch, headSHA, baseSHA, intent, "", "", "", prBaseBranch)
+	return d.InsertRunWithIntentAndLaunchNonce(repoID, branch, headSHA, baseSHA, intent, "", "", "", prBaseBranch, "")
 }
 
 // InsertRunWithIntentAndLaunchNonce persists an optional proof binding. The
 // partial unique index remains the duplicate defense across daemon processes;
 // callers additionally serialize selection under their branch lock.
-func (d *DB) InsertRunWithIntentAndLaunchNonce(repoID, branch, headSHA, baseSHA string, intent *RunIntent, launchNonce, validationGeneration, intentDigest, prBaseBranch string, profiles ...*agentcfg.PiProfile) (*Run, error) {
+func (d *DB) InsertRunWithIntentAndLaunchNonce(repoID, branch, headSHA, baseSHA string, intent *RunIntent, launchNonce, validationGeneration, intentDigest, prBaseBranch, reviewAgentJSON string, profiles ...*agentcfg.PiProfile) (*Run, error) {
 	pin := agentcfg.OptionalPiProfile(profiles)
 	if err := pin.Validate(); err != nil {
 		return nil, err
@@ -169,44 +169,18 @@ func (d *DB) InsertRunWithIntentAndLaunchNonce(repoID, branch, headSHA, baseSHA 
 	if prBaseBranch != "" {
 		r.PRBaseBranch = &prBaseBranch
 	}
+	reviewAgentJSON = strings.TrimSpace(reviewAgentJSON)
+	if reviewAgentJSON != "" {
+		r.ReviewAgentJSON = &reviewAgentJSON
+	}
 	_, err := d.sql.Exec(
-		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, status, pr_state, intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, pr_base_branch, pi_profile, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.NoMistakesVersion, r.NoMistakesBuildSHA, r.Status, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.LaunchNonce, r.LaunchValidationGeneration, r.LaunchIntentDigest, r.PRBaseBranch, r.PiProfile, r.CreatedAt, r.UpdatedAt,
+		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, status, pr_state, intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, pr_base_branch, pi_profile, review_agent_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.NoMistakesVersion, r.NoMistakesBuildSHA, r.Status, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.LaunchNonce, r.LaunchValidationGeneration, r.LaunchIntentDigest, r.PRBaseBranch, r.PiProfile, r.ReviewAgentJSON, r.CreatedAt, r.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert run: %w", err)
 	}
 	return r, nil
-}
-
-// SetRunReviewAgent durably records the one explicit reviewer override a run
-// may carry. The write is create-once: a recovery or duplicate launch can
-// replay the same value, but neither can replace an already selected reviewer.
-func (d *DB) SetRunReviewAgent(runID, selectionJSON string) error {
-	selectionJSON = strings.TrimSpace(selectionJSON)
-	if selectionJSON == "" {
-		return nil
-	}
-	result, err := d.sql.Exec(`UPDATE runs SET review_agent_json = ?, updated_at = ? WHERE id = ? AND review_agent_json IS NULL`, selectionJSON, now(), runID)
-	if err != nil {
-		return fmt.Errorf("set run reviewer: %w", err)
-	}
-	if affected, err := result.RowsAffected(); err != nil {
-		return fmt.Errorf("set run reviewer: %w", err)
-	} else if affected > 0 {
-		return nil
-	}
-	var existing *string
-	if err := d.sql.QueryRow(`SELECT review_agent_json FROM runs WHERE id = ?`, runID).Scan(&existing); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("set run reviewer: run %s not found", runID)
-		}
-		return fmt.Errorf("read run reviewer: %w", err)
-	}
-	if existing != nil && *existing == selectionJSON {
-		return nil
-	}
-	return fmt.Errorf("run %s already has a different reviewer selection", runID)
 }
 
 // RunWorktree is one run's recorded worktree placement, identified by the run
@@ -364,7 +338,7 @@ func (d *DB) GetRunByLaunchNonce(repoID, branch, launchNonce string) (*Run, erro
 // this caller is its first observer. The expected immutable receipt binding,
 // including an explicit PR base branch, is part of the UPDATE predicate, so a
 // conflicting observer cannot consume `created`.
-func (d *DB) ClaimLaunchReceipt(repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch string, profiles ...*agentcfg.PiProfile) (*Run, bool, error) {
+func (d *DB) ClaimLaunchReceipt(repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch, reviewAgentJSON string, profiles ...*agentcfg.PiProfile) (*Run, bool, error) {
 	request := agentcfg.OptionalPiProfile(profiles)
 	if err := request.ValidateRequest(); err != nil {
 		return nil, false, err
@@ -374,6 +348,7 @@ func (d *DB) ClaimLaunchReceipt(repoID, branch, launchNonce, submittedHeadSHA, v
 		model, effort = request.Model, string(request.Effort)
 	}
 	prBaseBranch = strings.TrimSpace(prBaseBranch)
+	reviewAgentJSON = strings.TrimSpace(reviewAgentJSON)
 	for {
 		r := &Run{}
 		err := scanRun(d.sql.QueryRow(
@@ -383,9 +358,10 @@ func (d *DB) ClaimLaunchReceipt(repoID, branch, launchNonce, submittedHeadSHA, v
 			   AND (? = '' OR pr_base_branch = ?)
 			   AND (? = '' OR json_extract(pi_profile, '$.model') = ?)
 			   AND (? = '' OR json_extract(pi_profile, '$.effort') = ?)
+			   AND COALESCE(review_agent_json, '') = ?
 			   AND launch_receipt_claimed_at IS NULL
 			 RETURNING `+runColumns,
-			now(), repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch, prBaseBranch, model, model, effort, effort,
+			now(), repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch, prBaseBranch, model, model, effort, effort, reviewAgentJSON,
 		), r)
 		if err == nil {
 			return r, true, nil
@@ -397,7 +373,11 @@ func (d *DB) ClaimLaunchReceipt(repoID, branch, launchNonce, submittedHeadSHA, v
 		if err != nil {
 			return nil, false, err
 		}
-		if r == nil || !r.PiProfile.Matches(request) || r.LaunchReceiptClaimedAt != nil ||
+		storedReviewerJSON := ""
+		if r != nil && r.ReviewAgentJSON != nil {
+			storedReviewerJSON = *r.ReviewAgentJSON
+		}
+		if r == nil || !r.PiProfile.Matches(request) || storedReviewerJSON != reviewAgentJSON || r.LaunchReceiptClaimedAt != nil ||
 			r.SubmittedHeadSHA == nil || *r.SubmittedHeadSHA != submittedHeadSHA ||
 			r.LaunchValidationGeneration == nil || *r.LaunchValidationGeneration != validationGeneration ||
 			r.LaunchIntentDigest == nil || *r.LaunchIntentDigest != intentDigest ||

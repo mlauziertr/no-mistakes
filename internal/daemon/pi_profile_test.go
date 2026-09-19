@@ -174,7 +174,7 @@ func TestPiProfileRecoveryUsesPersistedPinAndLegacyUsesLiveConfig(t *testing.T) 
 	defer d.Close()
 	repo, head := setupTestGitRepo(t, p, d, "recovery-profile")
 	pin := &agentcfg.PiProfile{Model: "openai-codex/gpt-5.4", Effort: agentcfg.EffortHigh}
-	pinned, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "pinned", head, head, nil, "", "", "", "", pin)
+	pinned, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "pinned", head, head, nil, "", "", "", "", "", pin)
 	if err != nil {
 		t.Fatal(err)
 	}

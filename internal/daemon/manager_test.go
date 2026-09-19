@@ -183,6 +183,7 @@ func TestProofLaunchReceiptPushCrashWindowConcurrentClaimsAndImmutableReplay(t *
 	repo, headSHA := setupTestGitRepo(t, p, d, "proof-push-repo")
 	const generation = "generation-push-001"
 	const intent = "opaque push intent"
+	reviewer := &config.ReviewAgent{Agent: types.AgentPi, Model: "xai/grok-4.6"}
 	gitCmd(t, repo.WorkingPath, "branch", "review/base")
 	gitCmd(t, repo.WorkingPath, "push", "gate", "review/base:refs/heads/review/base")
 
@@ -196,7 +197,7 @@ func TestProofLaunchReceiptPushCrashWindowConcurrentClaimsAndImmutableReplay(t *
 		Gate: p.RepoDir(repo.ID), Ref: "refs/heads/main",
 		Old: "0000000000000000000000000000000000000000", New: headSHA,
 		Intent: intent, LaunchNonce: "push-nonce", ValidationGeneration: generation,
-		PRBaseBranch: " review/base ",
+		PRBaseBranch: " review/base ", Reviewer: reviewer,
 	}, &pushed); err != nil {
 		t.Fatal(err)
 	}
@@ -210,6 +211,7 @@ func TestProofLaunchReceiptPushCrashWindowConcurrentClaimsAndImmutableReplay(t *
 	err = client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
 		RepoID: repo.ID, Branch: "main", HeadSHA: headSHA, Intent: intent,
 		LaunchNonce: "push-nonce", ValidationGeneration: generation, PRBaseBranch: "other/base",
+		Reviewer: reviewer,
 	}, &freshMismatch)
 	if err == nil || !strings.Contains(err.Error(), "different pr base branch") {
 		t.Fatalf("mismatched fresh launch err = %v, want base mismatch", err)
@@ -219,7 +221,7 @@ func TestProofLaunchReceiptPushCrashWindowConcurrentClaimsAndImmutableReplay(t *
 	err = client.Call(ipc.MethodClaimLaunchReceipt, &ipc.ClaimLaunchReceiptParams{
 		RepoID: repo.ID, Branch: "main", LaunchNonce: "push-nonce",
 		SubmittedHeadSHA: headSHA, ValidationGeneration: generation, IntentDigest: digestIntent(intent),
-		PRBaseBranch: "other/base",
+		PRBaseBranch: "other/base", Reviewer: reviewer,
 	}, &mismatched)
 	if err == nil || !strings.Contains(err.Error(), "different pr base branch") {
 		t.Fatalf("mismatched base claim err = %v, want base mismatch", err)
@@ -228,6 +230,17 @@ func TestProofLaunchReceiptPushCrashWindowConcurrentClaimsAndImmutableReplay(t *
 	stored, err := d.GetRun(pushed.RunID)
 	if err != nil || stored == nil || stored.LaunchReceiptClaimedAt != nil {
 		t.Fatalf("mismatched base claim consumed first receipt: run=%#v err=%v", stored, err)
+	}
+	err = client.Call(ipc.MethodClaimLaunchReceipt, &ipc.ClaimLaunchReceiptParams{
+		RepoID: repo.ID, Branch: "main", LaunchNonce: "push-nonce",
+		SubmittedHeadSHA: headSHA, ValidationGeneration: generation, IntentDigest: digestIntent(intent),
+	}, &mismatched)
+	if err == nil || !strings.Contains(err.Error(), "reviewer selection differs") {
+		t.Fatalf("mismatched reviewer claim err = %v, want reviewer mismatch", err)
+	}
+	stored, err = d.GetRun(pushed.RunID)
+	if err != nil || stored == nil || stored.LaunchReceiptClaimedAt != nil {
+		t.Fatalf("mismatched reviewer claim consumed first receipt: run=%#v err=%v", stored, err)
 	}
 
 	const callers = 4
@@ -241,7 +254,7 @@ func TestProofLaunchReceiptPushCrashWindowConcurrentClaimsAndImmutableReplay(t *
 				var result ipc.StartFreshRunResult
 				err = c.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
 					RepoID: repo.ID, Branch: "main", HeadSHA: headSHA, Intent: intent,
-					LaunchNonce: "push-nonce", ValidationGeneration: generation,
+					LaunchNonce: "push-nonce", ValidationGeneration: generation, Reviewer: reviewer,
 				}, &result)
 				results <- result
 			}
@@ -274,7 +287,7 @@ func TestProofLaunchReceiptPushCrashWindowConcurrentClaimsAndImmutableReplay(t *
 	if err := client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
 		RepoID: repo.ID, Branch: "main", HeadSHA: headSHA, Intent: intent,
 		LaunchNonce: "push-nonce", ValidationGeneration: generation,
-		PRBaseBranch: " review/base ",
+		PRBaseBranch: " review/base ", Reviewer: reviewer,
 	}, &replay); err != nil {
 		t.Fatal(err)
 	}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
@@ -11,6 +12,8 @@ import (
 )
 
 const maxReviewAgentJSON = 1024
+
+var reviewModelCredential = regexp.MustCompile(`(?i)^(?:sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,}|github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})$`)
 
 // ReviewAgent pins one review-loop role to an explicit harness. Empty model or
 // effort inherits agent_config for that harness; native argument overrides win.
@@ -53,7 +56,7 @@ func NormalizeReviewAgent(entry ReviewAgent) (ReviewAgent, error) {
 }
 
 func validateReviewModelID(model string) error {
-	if len(model) > 256 {
+	if len(model) > 256 || reviewModelCredential.MatchString(model) {
 		return fmt.Errorf("reviewer model must be an identifier")
 	}
 	for _, part := range strings.Split(model, "/") {
@@ -77,7 +80,13 @@ func validateReviewAgents(roles map[string]ReviewAgent) error {
 		if !agentcfg.Known(entry.Agent) {
 			return fmt.Errorf("review_agents.%s.agent must name an explicit harness, got %q", role, entry.Agent)
 		}
-		if err := agentcfg.Validate(entry.Agent, agentcfg.Profile{Model: strings.TrimSpace(entry.Model), Effort: entry.Effort}); err != nil {
+		model := strings.TrimSpace(entry.Model)
+		if model != "" {
+			if err := validateReviewModelID(model); err != nil {
+				return fmt.Errorf("invalid review_agents.%s: %w", role, err)
+			}
+		}
+		if err := agentcfg.Validate(entry.Agent, agentcfg.Profile{Model: model, Effort: entry.Effort}); err != nil {
 			return fmt.Errorf("invalid review_agents.%s: %w", role, err)
 		}
 	}
