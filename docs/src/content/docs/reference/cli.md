@@ -430,7 +430,7 @@ no-mistakes rerun --model openai-codex/gpt-5.4 --effort high
 ```
 
 `--model` and `--effort` opt this new run into a [pinned Pi profile](/no-mistakes/reference/global-config/#per-run-pi-profiles), with the same precedence and validation as `axi run`. Omitting both retains current global-config behavior; a prior run's model pin is not inherited.
-`--reviewer`, `--reviewer-model`, and `--reviewer-effort` have the same per-run reviewer-only meaning as on `axi run`. Model and effort overrides require an explicit `--reviewer`. Omitting all three inherits the selected prior run's persisted reviewer selection; an explicit reviewer replaces it. They cannot be combined with the all-duty Pi profile.
+`--reviewer`, `--reviewer-model`, and `--reviewer-effort` have the same per-run reviewer-only meaning as on `axi run`. Model and effort overrides require an explicit `--reviewer`. When neither reviewer flags nor an all-duty Pi profile is supplied, rerun inherits the selected prior run's persisted reviewer selection. An explicit reviewer replaces it, while an explicit all-duty profile starts without the prior reviewer. Explicit reviewer flags cannot be combined with the all-duty Pi profile.
 
 Starts a new pipeline run from the current gate branch, except when the latest
 terminal run has a verified unpublished head whose custody has not been
