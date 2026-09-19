@@ -358,10 +358,10 @@ func (d *DB) ClaimLaunchReceipt(repoID, branch, launchNonce, submittedHeadSHA, v
 			   AND (? = '' OR pr_base_branch = ?)
 			   AND (? = '' OR json_extract(pi_profile, '$.model') = ?)
 			   AND (? = '' OR json_extract(pi_profile, '$.effort') = ?)
-			   AND COALESCE(review_agent_json, '') = ?
+			   AND (? = '' OR COALESCE(review_agent_json, '') = ?)
 			   AND launch_receipt_claimed_at IS NULL
 			 RETURNING `+runColumns,
-			now(), repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch, prBaseBranch, model, model, effort, effort, reviewAgentJSON,
+			now(), repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch, prBaseBranch, model, model, effort, effort, reviewAgentJSON, reviewAgentJSON,
 		), r)
 		if err == nil {
 			return r, true, nil
@@ -377,7 +377,7 @@ func (d *DB) ClaimLaunchReceipt(repoID, branch, launchNonce, submittedHeadSHA, v
 		if r != nil && r.ReviewAgentJSON != nil {
 			storedReviewerJSON = *r.ReviewAgentJSON
 		}
-		if r == nil || !r.PiProfile.Matches(request) || storedReviewerJSON != reviewAgentJSON || r.LaunchReceiptClaimedAt != nil ||
+		if r == nil || !r.PiProfile.Matches(request) || (reviewAgentJSON != "" && storedReviewerJSON != reviewAgentJSON) || r.LaunchReceiptClaimedAt != nil ||
 			r.SubmittedHeadSHA == nil || *r.SubmittedHeadSHA != submittedHeadSHA ||
 			r.LaunchValidationGeneration == nil || *r.LaunchValidationGeneration != validationGeneration ||
 			r.LaunchIntentDigest == nil || *r.LaunchIntentDigest != intentDigest ||

@@ -234,6 +234,7 @@ func TestProofLaunchReceiptPushCrashWindowConcurrentClaimsAndImmutableReplay(t *
 	err = client.Call(ipc.MethodClaimLaunchReceipt, &ipc.ClaimLaunchReceiptParams{
 		RepoID: repo.ID, Branch: "main", LaunchNonce: "push-nonce",
 		SubmittedHeadSHA: headSHA, ValidationGeneration: generation, IntentDigest: digestIntent(intent),
+		Reviewer: &config.ReviewAgent{Agent: types.AgentCodex},
 	}, &mismatched)
 	if err == nil || !strings.Contains(err.Error(), "reviewer selection differs") {
 		t.Fatalf("mismatched reviewer claim err = %v, want reviewer mismatch", err)
@@ -241,6 +242,16 @@ func TestProofLaunchReceiptPushCrashWindowConcurrentClaimsAndImmutableReplay(t *
 	stored, err = d.GetRun(pushed.RunID)
 	if err != nil || stored == nil || stored.LaunchReceiptClaimedAt != nil {
 		t.Fatalf("mismatched reviewer claim consumed first receipt: run=%#v err=%v", stored, err)
+	}
+	var omitted ipc.ClaimLaunchReceiptResult
+	if err := client.Call(ipc.MethodClaimLaunchReceipt, &ipc.ClaimLaunchReceiptParams{
+		RepoID: repo.ID, Branch: "main", LaunchNonce: "push-nonce",
+		SubmittedHeadSHA: headSHA, ValidationGeneration: generation, IntentDigest: digestIntent(intent),
+	}, &omitted); err != nil {
+		t.Fatal(err)
+	}
+	if omitted.Receipt == nil || omitted.Receipt.Disposition != "created" || !config.ReviewAgentsEqual(omitted.Receipt.Reviewer, reviewer) {
+		t.Fatalf("omitted reviewer claim = %+v", omitted)
 	}
 
 	const callers = 4
@@ -261,7 +272,7 @@ func TestProofLaunchReceiptPushCrashWindowConcurrentClaimsAndImmutableReplay(t *
 			errs <- err
 		}()
 	}
-	created := 0
+	concurrentCreated := 0
 	for range callers {
 		if err := <-errs; err != nil {
 			t.Fatal(err)
@@ -271,11 +282,11 @@ func TestProofLaunchReceiptPushCrashWindowConcurrentClaimsAndImmutableReplay(t *
 			t.Fatalf("concurrent receipt run = %q, want %q", result.Receipt.RunID, pushed.RunID)
 		}
 		if result.Receipt.Disposition == "created" {
-			created++
+			concurrentCreated++
 		}
 	}
-	if created != 1 {
-		t.Fatalf("created receipts = %d, want 1", created)
+	if concurrentCreated != 0 {
+		t.Fatalf("concurrent created receipts = %d, want 0 after omitted first claim", concurrentCreated)
 	}
 
 	gitCmd(t, repo.WorkingPath, "commit", "--allow-empty", "-m", "advance gate")
@@ -287,7 +298,7 @@ func TestProofLaunchReceiptPushCrashWindowConcurrentClaimsAndImmutableReplay(t *
 	if err := client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
 		RepoID: repo.ID, Branch: "main", HeadSHA: headSHA, Intent: intent,
 		LaunchNonce: "push-nonce", ValidationGeneration: generation,
-		PRBaseBranch: " review/base ", Reviewer: reviewer,
+		PRBaseBranch: " review/base ",
 	}, &replay); err != nil {
 		t.Fatal(err)
 	}
