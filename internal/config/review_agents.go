@@ -35,6 +35,9 @@ func NormalizeReviewAgent(entry ReviewAgent) (ReviewAgent, error) {
 		return ReviewAgent{}, fmt.Errorf("reviewer.agent must name an explicit harness, got %q", entry.Agent)
 	}
 	if entry.Model != "" {
+		if err := validateReviewModelID(entry.Model); err != nil {
+			return ReviewAgent{}, err
+		}
 		// Per-run selections cross the push-option and durable-run boundaries.
 		// Keep every harness on an identifier-only surface so a URL or
 		// credential-shaped model can never be echoed into those logs. Pi has
@@ -45,8 +48,6 @@ func NormalizeReviewAgent(entry ReviewAgent) (ReviewAgent, error) {
 			if err := profile.ValidateRequest(); err != nil {
 				return ReviewAgent{}, fmt.Errorf("reviewer model: %w", err)
 			}
-		} else if err := validateReviewModelID(entry.Model); err != nil {
-			return ReviewAgent{}, err
 		}
 	}
 	if err := agentcfg.Validate(entry.Agent, agentcfg.Profile{Model: entry.Model, Effort: entry.Effort}); err != nil {
@@ -56,11 +57,11 @@ func NormalizeReviewAgent(entry ReviewAgent) (ReviewAgent, error) {
 }
 
 func validateReviewModelID(model string) error {
-	if len(model) > 256 || reviewModelCredential.MatchString(model) {
+	if len(model) > 256 {
 		return fmt.Errorf("reviewer model must be an identifier")
 	}
 	for _, part := range strings.Split(model, "/") {
-		if part == "" || part == "." || part == ".." || strings.HasPrefix(part, "-") {
+		if part == "" || part == "." || part == ".." || strings.HasPrefix(part, "-") || reviewModelCredential.MatchString(part) {
 			return fmt.Errorf("reviewer model must be an identifier")
 		}
 		for _, c := range part {

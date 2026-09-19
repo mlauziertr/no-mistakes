@@ -86,24 +86,30 @@ func TestReviewAgentSnapshotAcceptsCatalogIDsForNonPiHarnesses(t *testing.T) {
 }
 
 func TestReviewAgentSnapshotRejectsCredentialShapedModelWithoutEcho(t *testing.T) {
-	credentials := []string{
-		"sk-" + "proj-" + strings.Repeat("a", 32),
-		"github_" + "pat_" + strings.Repeat("b", 40),
-		"ghp_" + strings.Repeat("c", 36),
+	tests := []struct {
+		agent  types.AgentName
+		model  string
+		secret string
+	}{
+		{types.AgentCodex, "sk-" + "proj-" + strings.Repeat("a", 32), strings.Repeat("a", 32)},
+		{types.AgentCodex, "provider/github_" + "pat_" + strings.Repeat("b", 40), strings.Repeat("b", 40)},
+		{types.AgentCodex, "provider/ghp_" + strings.Repeat("c", 36), strings.Repeat("c", 36)},
+		{types.AgentPi, "openai/sk-" + "proj-" + strings.Repeat("d", 32), strings.Repeat("d", 32)},
+		{types.AgentPi, "openai/github_" + "pat_" + strings.Repeat("e", 40), strings.Repeat("e", 40)},
 	}
-	for _, credential := range credentials {
-		_, err := MarshalReviewAgent(&ReviewAgent{Agent: types.AgentCodex, Model: credential})
+	for _, test := range tests {
+		_, err := MarshalReviewAgent(&ReviewAgent{Agent: test.agent, Model: test.model})
 		if err == nil {
 			t.Fatal("credential-shaped reviewer model was accepted")
 		}
-		if strings.Contains(err.Error(), credential) {
+		if strings.Contains(err.Error(), test.secret) {
 			t.Fatal("rejected reviewer model was echoed")
 		}
-		_, err = LoadGlobalFromBytes([]byte("review_agents:\n  reviewer: {agent: codex, model: " + credential + "}\n"))
+		_, err = LoadGlobalFromBytes([]byte("review_agents:\n  reviewer: {agent: " + string(test.agent) + ", model: " + test.model + "}\n"))
 		if err == nil {
 			t.Fatal("credential-shaped configured reviewer model was accepted")
 		}
-		if strings.Contains(err.Error(), credential) {
+		if strings.Contains(err.Error(), test.secret) {
 			t.Fatal("rejected configured reviewer model was echoed")
 		}
 	}

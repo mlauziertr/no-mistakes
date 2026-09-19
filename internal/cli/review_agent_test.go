@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -26,14 +27,23 @@ func TestReviewerFromFlagsDefaultsToPiForGrokModel(t *testing.T) {
 }
 
 func TestReviewerFromFlagsRejectsCredentialShapedModel(t *testing.T) {
-	cmd := &cobra.Command{}
-	var reviewer, model, effort string
-	bindReviewerFlags(cmd, &reviewer, &model, &effort)
-	if err := cmd.ParseFlags([]string{"--reviewer-model", "https://secret@example.test/model"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := reviewerFromFlags(cmd, reviewer, model, effort); err == nil {
-		t.Fatal("credential-shaped reviewer model was accepted")
+	secret := strings.Repeat("a", 32)
+	for _, args := range [][]string{
+		{"--reviewer-model", "https://secret@example.test/model"},
+		{"--reviewer-model", "openai/sk-" + "proj-" + secret},
+		{"--reviewer", "codex", "--reviewer-model", "provider/sk-" + "proj-" + secret},
+	} {
+		cmd := &cobra.Command{}
+		var reviewer, model, effort string
+		bindReviewerFlags(cmd, &reviewer, &model, &effort)
+		if err := cmd.ParseFlags(args); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := reviewerFromFlags(cmd, reviewer, model, effort); err == nil {
+			t.Fatal("credential-shaped reviewer model was accepted")
+		} else if strings.Contains(err.Error(), secret) {
+			t.Fatal("rejected reviewer model was echoed")
+		}
 	}
 }
 
