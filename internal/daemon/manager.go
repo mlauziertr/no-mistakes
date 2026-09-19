@@ -1175,7 +1175,7 @@ func (m *RunManager) HandleRerunWithReviewer(ctx context.Context, repoID, branch
 	if err != nil {
 		return "", err
 	}
-	if reviewer == nil && selectedRun.ReviewAgentJSON != nil {
+	if reviewer == nil && agentcfg.OptionalPiProfile(profiles) == nil && selectedRun.ReviewAgentJSON != nil {
 		reviewer, err = config.ParseReviewAgentJSON(*selectedRun.ReviewAgentJSON)
 		if err != nil {
 			return "", fmt.Errorf("parse selected run reviewer: %w", err)
