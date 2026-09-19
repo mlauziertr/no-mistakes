@@ -60,7 +60,11 @@ func (a *cursorAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 	}
 	defer workspace.Close()
 
-	prompt := buildCursorPrompt(opts.Prompt, opts.JSONSchema)
+	prompt := strings.ReplaceAll(opts.Prompt, opts.CWD, workspace.Path)
+	for original, isolated := range workspace.Commits {
+		prompt = strings.ReplaceAll(prompt, original, isolated)
+	}
+	prompt = buildCursorPrompt(prompt, opts.JSONSchema)
 	args := a.buildArgs(workspace.Path)
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = workspace.Path
@@ -129,6 +133,7 @@ func (a *cursorAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 		return resultFromUsage(usage), retErr
 	}
 
+	out.Result = strings.ReplaceAll(out.Result, workspace.Path, opts.CWD)
 	if opts.OnChunk != nil && out.Result != "" {
 		opts.OnChunk(out.Result)
 	}
@@ -252,6 +257,7 @@ type cursorIsolatedWorkspace struct {
 	DataDir       string
 	StoreDir      string
 	StoreFilesDir string
+	Commits       map[string]string
 }
 
 func (w *cursorIsolatedWorkspace) Close() {
@@ -278,12 +284,6 @@ var cursorInstructionDirs = map[string]struct{}{
 	".grok":   {},
 }
 
-// newCursorIsolatedWorkspace clones only the committed snapshot and scrubs
-// every Cursor-discovered project instruction surface before launch. The
-// clone has no remotes, no hooks, and a separate Cursor config/data root, so a
-// read-only reviewer cannot read the target's instructions or mutate its Git
-// or Cursor state. A dirty source is refused rather than reviewed from a
-// stale snapshot.
 func newCursorIsolatedWorkspace(ctx context.Context, source string, env []string) (*cursorIsolatedWorkspace, error) {
 	if strings.TrimSpace(source) == "" {
 		return nil, fmt.Errorf("source worktree is empty")
@@ -307,14 +307,9 @@ func newCursorIsolatedWorkspace(ctx context.Context, source string, env []string
 	}
 
 	workspacePath := filepath.Join(root, "workspace")
-	if err := runCursorGitCommand(ctx, env, "clone", "--no-local", "--no-hardlinks", "--no-tags", "--no-checkout", "--", source, workspacePath); err != nil {
-		return fail(fmt.Errorf("clone snapshot: %w", err))
-	}
-	if _, err := runCursorGit(ctx, workspacePath, env, "-C", workspacePath, "checkout", "--detach", "HEAD"); err != nil {
-		return fail(fmt.Errorf("checkout snapshot: %w", err))
-	}
-	if _, err := runCursorGit(ctx, workspacePath, env, "-C", workspacePath, "remote", "remove", "origin"); err != nil {
-		return fail(fmt.Errorf("remove snapshot remote: %w", err))
+	commits, err := exportCursorHistory(ctx, source, workspacePath, root, env)
+	if err != nil {
+		return fail(err)
 	}
 	if _, err := runCursorGit(ctx, workspacePath, env, "-C", workspacePath, "config", "--local", "core.hooksPath", os.DevNull); err != nil {
 		return fail(fmt.Errorf("disable snapshot hooks: %w", err))
@@ -342,6 +337,7 @@ func newCursorIsolatedWorkspace(ctx context.Context, source string, env []string
 		DataDir:       dataDir,
 		StoreDir:      storeDir,
 		StoreFilesDir: storeFilesDir,
+		Commits:       commits,
 	}, nil
 }
 
@@ -356,14 +352,71 @@ func runCursorGit(ctx context.Context, dir string, env []string, args ...string)
 	return string(output), nil
 }
 
-func runCursorGitCommand(ctx context.Context, env []string, args ...string) error {
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env = env
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, outputSnippet(string(output)))
+func exportCursorHistory(ctx context.Context, source, workspace, root string, env []string) (map[string]string, error) {
+	if _, err := runCursorGit(ctx, root, env, "init", "--template=", workspace); err != nil {
+		return nil, err
 	}
-	return nil
+	originalMarks := filepath.Join(root, "original-marks")
+	isolatedMarks := filepath.Join(root, "isolated-marks")
+	args := []string{"-C", source, "fast-export", "--export-marks=" + originalMarks, "--full-tree", "--full-history", "--sparse", "HEAD", "--", "."}
+	for name := range cursorInstructionFiles {
+		args = append(args, ":(glob,exclude)**/"+name)
+	}
+	for name := range cursorInstructionDirs {
+		args = append(args, ":(glob,exclude)**/"+name+"/**")
+	}
+	export := exec.CommandContext(ctx, "git", args...)
+	export.Dir = source
+	export.Env = env
+	data, err := export.Output()
+	if err != nil {
+		return nil, fmt.Errorf("export sanitized history: %w", err)
+	}
+	importCmd := exec.CommandContext(ctx, "git", "-C", workspace, "fast-import", "--export-marks="+isolatedMarks)
+	importCmd.Env = env
+	importCmd.Stdin = bytes.NewReader(data)
+	if output, err := importCmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("import sanitized history: %w: %s", err, outputSnippet(string(output)))
+	}
+	original, err := readCursorMarks(originalMarks)
+	if err != nil {
+		return nil, err
+	}
+	isolated, err := readCursorMarks(isolatedMarks)
+	if err != nil {
+		return nil, err
+	}
+	commits := make(map[string]string, len(original))
+	for mark, sha := range original {
+		if isolated[mark] == "" {
+			return nil, fmt.Errorf("missing isolated commit for %s", sha)
+		}
+		commits[sha] = isolated[mark]
+	}
+	head, err := runCursorGit(ctx, source, env, "rev-parse", "HEAD")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := runCursorGit(ctx, workspace, env, "checkout", "--detach", commits[strings.TrimSpace(head)]); err != nil {
+		return nil, err
+	}
+	return commits, nil
+}
+
+func readCursorMarks(path string) (map[string]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	marks := make(map[string]string)
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			return nil, fmt.Errorf("invalid Git export mark %q", line)
+		}
+		marks[fields[0]] = fields[1]
+	}
+	return marks, nil
 }
 
 func scrubCursorWorkspace(root string) error {
