@@ -13,7 +13,7 @@ import (
 
 const maxReviewAgentJSON = 1024
 
-var reviewModelCredential = regexp.MustCompile(`(?i)^(?:sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,}|github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})$`)
+var reviewModelCredential = regexp.MustCompile(`(?i)^(?:sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,}|xai-[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})$`)
 
 // ReviewAgent pins one review-loop role to an explicit harness. Empty model or
 // effort inherits agent_config for that harness; native argument overrides win.
