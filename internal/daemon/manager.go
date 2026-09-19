@@ -845,8 +845,14 @@ func normalizeRunReviewer(reviewer *config.ReviewAgent) (*config.ReviewAgent, er
 }
 
 func runReviewerMatches(run *db.Run, requested *config.ReviewAgent) bool {
-	if run == nil || run.ReviewAgentJSON == nil {
-		return requested == nil
+	if run == nil {
+		return false
+	}
+	if requested == nil {
+		return true
+	}
+	if run.ReviewAgentJSON == nil {
+		return false
 	}
 	stored, err := config.ParseReviewAgentJSON(*run.ReviewAgentJSON)
 	return err == nil && config.ReviewAgentsEqual(stored, requested)
@@ -1259,11 +1265,11 @@ func fetchRunDefaultBranch(ctx context.Context, workDir string, repo *db.Repo) e
 
 // fetchTrustedDefaultBranchSHA imports the live default branch into a
 // caller-owned private ref on the gate. It does not rewrite origin tracking
-// refs, FETCH_HEAD, or any shared worktree ref, so a refused Pi pin cannot
+// refs, FETCH_HEAD, or any shared worktree ref, so a refused launch cannot
 // perturb an in-flight validation that must stay running.
 func fetchTrustedDefaultBranchSHA(ctx context.Context, gateDir string, repo *db.Repo) (string, error) {
 	if strings.TrimSpace(repo.DefaultBranch) == "" {
-		return "", fmt.Errorf("cannot evaluate Pi run profile: repository has no known default branch to read trusted config from")
+		return "", fmt.Errorf("cannot evaluate run configuration: repository has no known default branch to read trusted config from")
 	}
 	privateRef := fmt.Sprintf("refs/no-mistakes/pi-profile/%d-%d", os.Getpid(), time.Now().UnixNano())
 	defer func() {
@@ -1277,13 +1283,32 @@ func fetchTrustedDefaultBranchSHA(ctx context.Context, gateDir string, repo *db.
 		fetchErr = git.FetchRemoteBranchToPrivateRef(ctx, gateDir, repo.UpstreamURL, repo.DefaultBranch, privateRef)
 	}
 	if fetchErr != nil {
-		return "", fmt.Errorf("cannot evaluate Pi run profile: failed to fetch trusted default branch %q: %w", repo.DefaultBranch, fetchErr)
+		return "", fmt.Errorf("cannot evaluate run configuration: failed to fetch trusted default branch %q: %w", repo.DefaultBranch, fetchErr)
 	}
 	sha, err := git.ResolveRef(ctx, gateDir, privateRef)
 	if err != nil {
-		return "", fmt.Errorf("cannot evaluate Pi run profile: failed to resolve trusted default branch %q: %w", repo.DefaultBranch, err)
+		return "", fmt.Errorf("cannot evaluate run configuration: failed to resolve trusted default branch %q: %w", repo.DefaultBranch, err)
 	}
 	return sha, nil
+}
+
+func (m *RunManager) effectiveConfigBeforeCancel(ctx context.Context, repo *db.Repo, headSHA string, globalCfg *config.GlobalConfig) (*config.Config, error) {
+	gateDir := m.paths.RepoDir(repo.ID)
+	trustedSHA, err := fetchTrustedDefaultBranchSHA(ctx, gateDir, repo)
+	if err != nil {
+		return nil, err
+	}
+	if err := assertGateTrustedConfigReadable(ctx, gateDir, repo.DefaultBranch, trustedSHA); err != nil {
+		return nil, err
+	}
+	trustedRepoCfg := loadTrustedRepoConfig(ctx, gateDir, trustedSHA, "")
+	pushedRepoCfg, err := loadRepoConfigAtSHA(ctx, gateDir, headSHA)
+	if err != nil {
+		return nil, err
+	}
+	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
+	effective := config.EffectiveRepoConfig(pushedRepoCfg, trustedRepoCfg, allowRepoCommands)
+	return config.Merge(globalCfg, effective), nil
 }
 
 // validatePiProfileAgentsBeforeCancel loads the effective trusted repo agent
@@ -1292,30 +1317,47 @@ func fetchTrustedDefaultBranchSHA(ctx context.Context, gateDir string, repo *db.
 // A trusted default-branch Claude or mixed fallback list must fail here, not
 // after cancelActiveRuns has already stopped a healthy validation.
 func (m *RunManager) validatePiProfileAgentsBeforeCancel(ctx context.Context, repo *db.Repo, headSHA string, globalCfg *config.GlobalConfig) error {
-	gateDir := m.paths.RepoDir(repo.ID)
-	trustedSHA, err := fetchTrustedDefaultBranchSHA(ctx, gateDir, repo)
+	cfg, err := m.effectiveConfigBeforeCancel(ctx, repo, headSHA, globalCfg)
 	if err != nil {
 		return err
 	}
-	trustedRepoCfg := loadTrustedRepoConfig(ctx, gateDir, trustedSHA, "")
-	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
-	effective := config.EffectiveRepoConfig(loadRepoConfigAtSHA(ctx, gateDir, headSHA), trustedRepoCfg, allowRepoCommands)
-	return config.Merge(globalCfg, effective).ValidatePiProfileAgents()
+	return cfg.ValidatePiProfileAgents()
 }
 
-func loadRepoConfigAtSHA(ctx context.Context, dir, sha string) *config.RepoConfig {
+func (m *RunManager) validateReviewerBeforeCancel(ctx context.Context, repo *db.Repo, headSHA string, globalCfg *config.GlobalConfig, reviewer *config.ReviewAgent) error {
+	cfg, err := m.effectiveConfigBeforeCancel(ctx, repo, headSHA, globalCfg)
+	if err != nil {
+		return err
+	}
+	applyRunReviewer(cfg, reviewer)
+	ag, err := newPipelineAgent(ctx, cfg, "", exec.LookPath, runenv.Overlay{})
+	if err != nil {
+		return err
+	}
+	_ = ag.Close()
+	return nil
+}
+
+func loadRepoConfigAtSHA(ctx context.Context, dir, sha string) (*config.RepoConfig, error) {
 	if sha == "" {
-		return &config.RepoConfig{}
+		return &config.RepoConfig{}, nil
+	}
+	entry, err := git.Run(ctx, dir, "ls-tree", sha, "--", ".no-mistakes.yaml")
+	if err != nil {
+		return nil, fmt.Errorf("read pushed repository config tree: %w", err)
+	}
+	if entry == "" {
+		return &config.RepoConfig{}, nil
 	}
 	content, err := git.ShowFile(ctx, dir, sha, ".no-mistakes.yaml")
 	if err != nil {
-		return &config.RepoConfig{}
+		return nil, fmt.Errorf("read pushed repository config: %w", err)
 	}
 	cfg, err := config.LoadRepoFromBytes([]byte(content))
 	if err != nil {
-		return &config.RepoConfig{}
+		return nil, fmt.Errorf("parse pushed repository config: %w", err)
 	}
-	return cfg
+	return cfg, nil
 }
 
 // startRun creates a run, sets up a worktree, and launches pipeline execution.
@@ -1396,18 +1438,22 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		trackStartFailure("invalid_reviewer")
 		return "", err
 	}
-	// ResolvePiProfile checks the global agent list; trusted default-branch
-	// agent selection is checked next because it can still replace that list
-	// with Claude or mixed fallbacks after merge.
+	// Explicit selections must resolve against global and trusted repository
+	// configuration before cancellation because either can change the agents
+	// that will actually launch after merge.
 	var globalCfg *config.GlobalConfig
 	var pin *agentcfg.PiProfile
-	if request := agentcfg.OptionalPiProfile(profiles); request != nil {
+	request := agentcfg.OptionalPiProfile(profiles)
+	if reviewer != nil || request != nil {
 		var err error
 		globalCfg, err = config.LoadGlobal(m.paths.ConfigFile())
 		if err != nil {
 			trackStartFailure("load_global_config")
 			return "", fmt.Errorf("load global config: %w", err)
 		}
+	}
+	if request != nil {
+		var err error
 		pin, err = globalCfg.ResolvePiProfile(request)
 		if err != nil {
 			trackStartFailure("invalid_pi_profile")
@@ -1415,6 +1461,12 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		}
 		if err := m.validatePiProfileAgentsBeforeCancel(ctx, repo, headSHA, globalCfg); err != nil {
 			trackStartFailure("invalid_pi_profile")
+			return "", err
+		}
+	}
+	if reviewer != nil {
+		if err := m.validateReviewerBeforeCancel(ctx, repo, headSHA, globalCfg, reviewer); err != nil {
+			trackStartFailure("invalid_reviewer")
 			return "", err
 		}
 	}

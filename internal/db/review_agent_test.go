@@ -24,9 +24,13 @@ func TestRunReviewerSelectionIsWriteOnce(t *testing.T) {
 	if err != nil || claimed || got == nil || got.LaunchReceiptClaimedAt != nil {
 		t.Fatalf("conflicting reviewer claim = %+v, claimed=%v, err=%v", got, claimed, err)
 	}
-	got, claimed, err = d.ClaimLaunchReceipt(repo.ID, "feature", "nonce", "head", "generation", "digest", "", selection)
+	got, claimed, err = d.ClaimLaunchReceipt(repo.ID, "feature", "nonce", "head", "generation", "digest", "", "")
 	if err != nil || !claimed || got == nil || got.LaunchReceiptClaimedAt == nil {
-		t.Fatalf("matching reviewer claim = %+v, claimed=%v, err=%v", got, claimed, err)
+		t.Fatalf("omitted reviewer claim = %+v, claimed=%v, err=%v", got, claimed, err)
+	}
+	got, claimed, err = d.ClaimLaunchReceipt(repo.ID, "feature", "nonce", "head", "generation", "digest", "", selection)
+	if err != nil || claimed || got == nil || got.LaunchReceiptClaimedAt == nil {
+		t.Fatalf("matching reviewer replay = %+v, claimed=%v, err=%v", got, claimed, err)
 	}
 	got, err = d.GetRun(run.ID)
 	if err != nil {

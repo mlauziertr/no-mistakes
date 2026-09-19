@@ -98,6 +98,10 @@ func TestReviewAgentSnapshotRejectsCredentialShapedModelWithoutEcho(t *testing.T
 		{types.AgentPi, "openai/github_" + "pat_" + strings.Repeat("e", 40), strings.Repeat("e", 40)},
 		{types.AgentCodex, "xai-" + strings.Repeat("f", 80), strings.Repeat("f", 80)},
 		{types.AgentCodex, "hf_" + strings.Repeat("g", 32), strings.Repeat("g", 32)},
+		{types.AgentCodex, "AIza" + strings.Repeat("i", 35), strings.Repeat("i", 35)},
+		{types.AgentPi, "google/AIza" + strings.Repeat("j", 35), strings.Repeat("j", 35)},
+		{types.AgentCodex, "sk_live_" + strings.Repeat("k", 32), strings.Repeat("k", 32)},
+		{types.AgentPi, "stripe/rk_live_" + strings.Repeat("m", 32), strings.Repeat("m", 32)},
 	}
 	for _, prefix := range []string{"glpat-", "gloas-", "gldt-", "glrt-", "glrtr-", "glcbt-", "glptt-", "glft-", "glimt-", "glagent-", "glwt-", "glsoat-", "glffct-"} {
 		secret := strings.Repeat("h", 32)

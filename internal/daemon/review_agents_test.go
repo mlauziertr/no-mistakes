@@ -10,7 +10,9 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -94,6 +96,80 @@ func TestPipelineReviewRoleFailsClosed(t *testing.T) {
 	_, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{})
 	if err == nil || !strings.Contains(err.Error(), "review_agents.reviewer") || !strings.Contains(err.Error(), "does not neutralize") {
 		t.Fatalf("unsafe reviewer error = %v", err)
+	}
+}
+
+func TestInvalidReviewerLaunchDoesNotSupersedeActiveRun(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		global      func(string, string) string
+		trusted     string
+		reviewer    config.ReviewAgent
+		wantFailure string
+	}{
+		{
+			name: "reviewer binary unavailable",
+			global: func(fake, missing string) string {
+				return "agent: claude\nagent_path_override:\n  claude: " + fake + "\n  codex: " + missing + "\n"
+			},
+			reviewer:    config.ReviewAgent{Agent: types.AgentCodex},
+			wantFailure: "codex",
+		},
+		{
+			name: "trusted project instruction opt-out rejects reviewer",
+			global: func(fake, _ string) string {
+				return "agent: claude\nagent_path_override:\n  claude: " + fake + "\n  grok: " + fake + "\n"
+			},
+			trusted:     "disable_project_settings: true\n",
+			reviewer:    config.ReviewAgent{Agent: types.AgentGrok},
+			wantFailure: "does not neutralize",
+		},
+		{
+			name:        "invalid global configuration",
+			global:      func(_, _ string) string { return "agent: [\n" },
+			reviewer:    config.ReviewAgent{Agent: types.AgentPi},
+			wantFailure: "load global config",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := paths.WithRoot(t.TempDir())
+			if err := p.EnsureDirs(); err != nil {
+				t.Fatal(err)
+			}
+			d, err := db.Open(p.DB())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			repo, head := setupTestGitRepo(t, p, d, "invalid-reviewer-launch")
+			if tc.trusted != "" {
+				head = commitDefaultBranchConfig(t, repo.WorkingPath, tc.trusted)
+			}
+			active, err := d.InsertRun(repo.ID, "main", head, head)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fake := writeMockClaude(t, t.TempDir())
+			missing := filepath.Join(t.TempDir(), "missing-reviewer")
+			if err := os.WriteFile(p.ConfigFile(), []byte(tc.global(fake, missing)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			m := NewRunManager(d, p, nil)
+			cancelled := false
+			m.cancels[active.ID] = func(error) { cancelled = true }
+			if _, err := m.startRunWithReviewer(context.Background(), repo, "main", head, head, "test", nil, "intent", "", &tc.reviewer); err == nil {
+				t.Fatal("invalid reviewer launch succeeded")
+			} else if !strings.Contains(err.Error(), tc.wantFailure) {
+				t.Fatalf("launch error = %v, want %q", err, tc.wantFailure)
+			}
+			runs, err := d.GetRunsByRepo(repo.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cancelled || len(runs) != 1 || runs[0].ID != active.ID {
+				t.Fatalf("invalid reviewer changed active validation: cancelled=%v runs=%#v", cancelled, runs)
+			}
+		})
 	}
 }
 
