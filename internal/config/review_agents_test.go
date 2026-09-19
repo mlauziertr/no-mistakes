@@ -97,6 +97,15 @@ func TestReviewAgentSnapshotRejectsCredentialShapedModelWithoutEcho(t *testing.T
 		{types.AgentPi, "openai/sk-" + "proj-" + strings.Repeat("d", 32), strings.Repeat("d", 32)},
 		{types.AgentPi, "openai/github_" + "pat_" + strings.Repeat("e", 40), strings.Repeat("e", 40)},
 		{types.AgentCodex, "xai-" + strings.Repeat("f", 80), strings.Repeat("f", 80)},
+		{types.AgentCodex, "hf_" + strings.Repeat("g", 32), strings.Repeat("g", 32)},
+	}
+	for _, prefix := range []string{"glpat-", "gloas-", "gldt-", "glrt-", "glrtr-", "glcbt-", "glptt-", "glft-", "glimt-", "glagent-", "glwt-", "glsoat-", "glffct-"} {
+		secret := strings.Repeat("h", 32)
+		tests = append(tests, struct {
+			agent  types.AgentName
+			model  string
+			secret string
+		}{types.AgentPi, "xai/" + prefix + secret, secret})
 	}
 	for _, test := range tests {
 		_, err := MarshalReviewAgent(&ReviewAgent{Agent: test.agent, Model: test.model})
