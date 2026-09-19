@@ -33,6 +33,8 @@ func TestReviewerFromFlagsRejectsCredentialShapedModel(t *testing.T) {
 		{"--reviewer-model", "openai/sk-" + "proj-" + secret},
 		{"--reviewer", "codex", "--reviewer-model", "provider/sk-" + "proj-" + secret},
 		{"--reviewer", "codex", "--reviewer-model", "xai-" + secret},
+		{"--reviewer", "codex", "--reviewer-model", "hf_" + secret},
+		{"--reviewer-model", "xai/glpat-" + secret},
 	} {
 		cmd := &cobra.Command{}
 		var reviewer, model, effort string
