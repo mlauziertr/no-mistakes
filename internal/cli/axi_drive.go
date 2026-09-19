@@ -233,6 +233,10 @@ func runAxiRunWithLaunchProofAndReviewer(cmd *cobra.Command, autoYes bool, skipS
 		return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
 	}
 	defer env.close()
+	reviewer, err = resolveRunReviewer(env.client, reviewer)
+	if err != nil {
+		return emitError(cmd, 2, fmt.Sprintf("resolve reviewer: %v", err))
+	}
 
 	branch, err := git.CurrentBranch(ctx, ".")
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/spf13/cobra"
 )
@@ -48,6 +49,21 @@ func reviewerFromFlags(cmd *cobra.Command, reviewer, model, effort string) (*con
 	normalized, err := config.NormalizeReviewAgent(entry)
 	if err != nil {
 		return nil, err
+	}
+	return &normalized, nil
+}
+
+func resolveRunReviewer(client *ipc.Client, reviewer *config.ReviewAgent) (*config.ReviewAgent, error) {
+	if reviewer == nil {
+		return nil, nil
+	}
+	var resolved config.ReviewAgent
+	if err := client.Call(ipc.MethodResolveReviewAgent, reviewer, &resolved); err != nil {
+		return nil, err
+	}
+	normalized, err := config.NormalizeReviewAgent(resolved)
+	if err != nil {
+		return nil, fmt.Errorf("invalid reviewer response: %w", err)
 	}
 	return &normalized, nil
 }

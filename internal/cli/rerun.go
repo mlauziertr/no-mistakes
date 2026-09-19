@@ -65,6 +65,10 @@ func newRerunCmd() *cobra.Command {
 					return fmt.Errorf("connect to daemon: %w", err)
 				}
 				defer client.Close()
+				reviewerSelection, err = resolveRunReviewer(client, reviewerSelection)
+				if err != nil {
+					return fmt.Errorf("resolve reviewer: %w", err)
+				}
 				if profile != nil {
 					var resolved agentcfg.PiProfile
 					if err := client.Call(ipc.MethodResolvePiProfile, profile, &resolved); err != nil {
