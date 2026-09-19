@@ -65,6 +65,24 @@ func TestReviewAgentsOmitted(t *testing.T) {
 	}
 }
 
+func TestReviewAgentSnapshotAcceptsCatalogIDsForNonPiHarnesses(t *testing.T) {
+	entry := &ReviewAgent{Agent: types.AgentCodex, Model: "gpt-5.6-sol", Effort: agentcfg.EffortMedium}
+	encoded, err := MarshalReviewAgent(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParseReviewAgentJSON(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ReviewAgentsEqual(got, entry) {
+		t.Fatalf("round trip = %#v, want %#v", got, entry)
+	}
+	if _, err := MarshalReviewAgent(&ReviewAgent{Agent: types.AgentCodex, Model: "https://secret@example.test/model"}); err == nil {
+		t.Fatal("credential-shaped non-Pi reviewer model was accepted")
+	}
+}
+
 func TestReviewAgentSnapshotRoundTripsStrictly(t *testing.T) {
 	entry := &ReviewAgent{Agent: types.AgentPi, Model: " xai/grok-4.6 ", Effort: agentcfg.EffortHigh}
 	encoded, err := MarshalReviewAgent(entry)

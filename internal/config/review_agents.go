@@ -35,7 +35,8 @@ func NormalizeReviewAgent(entry ReviewAgent) (ReviewAgent, error) {
 		// Per-run selections cross the push-option and durable-run boundaries.
 		// Keep every harness on an identifier-only surface so a URL or
 		// credential-shaped model can never be echoed into those logs. Pi has
-		// the stronger provider/model contract; Cursor's catalog uses a bare ID.
+		// the stronger provider/model contract; other harnesses use catalog IDs
+		// that may contain slash-separated provider prefixes.
 		if entry.Agent == types.AgentPi {
 			profile := agentcfg.PiProfile{Model: entry.Model, Effort: entry.Effort}
 			if err := profile.ValidateRequest(); err != nil {

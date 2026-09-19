@@ -359,13 +359,6 @@ select the agents repairing tests, documentation, or CI. An opt-in
 that run. Eval capture strips these profiles so replay candidates remain
 authoritative.
 
-When trusted `disable_project_settings: true` is enabled, `cursor` is admitted
-only as the reviewer role and only through the direct isolated snapshot route:
-the review runs read-only against a committed disposable copy with Cursor's
-project-instruction surfaces removed. Native `acp:cursor` and Cursor as the
-primary or fixer remain refused because their project-instruction isolation is
-not verified.
-
 ### agent_args_override
 
 Extra CLI flags to pass to each native agent.
