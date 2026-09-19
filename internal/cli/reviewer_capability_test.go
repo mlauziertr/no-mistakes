@@ -78,9 +78,10 @@ func TestExplicitReviewerRequiresDaemonCapabilityBeforeMutation(t *testing.T) {
 	reviewer := &config.ReviewAgent{Agent: types.AgentPi}
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
-	cmd.SetOut(&bytes.Buffer{})
-	if err := runAxiRunWithLaunchProofAndReviewer(cmd, false, nil, "intent", "", "reviewer-capability", "generation", time.Second, reviewer); err == nil || !strings.Contains(err.Error(), "resolve reviewer") {
-		t.Fatalf("AXI old-daemon error = %v", err)
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	if err := runAxiRunWithLaunchProofAndReviewer(cmd, false, nil, "intent", "", "reviewer-capability", "generation", time.Second, reviewer); err == nil || !strings.Contains(output.String(), "resolve reviewer") {
+		t.Fatalf("AXI old-daemon error = %v, output = %q", err, output.String())
 	}
 	if claims.Load() != 0 {
 		t.Fatalf("old daemon received %d launch claims before reviewer capability rejection", claims.Load())
@@ -98,9 +99,10 @@ func TestExplicitReviewerRequiresDaemonCapabilityBeforeMutation(t *testing.T) {
 
 	legacy := &cobra.Command{}
 	legacy.SetContext(context.Background())
-	legacy.SetOut(&bytes.Buffer{})
-	if err := runAxiRunWithLaunchProof(legacy, false, nil, "intent", "", "legacy-capability", "generation", time.Second); err == nil || !strings.Contains(err.Error(), "legacy claim reached") {
-		t.Fatalf("legacy AXI request error = %v", err)
+	output.Reset()
+	legacy.SetOut(&output)
+	if err := runAxiRunWithLaunchProof(legacy, false, nil, "intent", "", "legacy-capability", "generation", time.Second); err == nil || !strings.Contains(output.String(), "legacy claim reached") {
+		t.Fatalf("legacy AXI request error = %v, output = %q", err, output.String())
 	}
 	if claims.Load() != 1 {
 		t.Fatalf("legacy request made %d launch claims, want 1", claims.Load())
