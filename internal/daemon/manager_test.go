@@ -181,6 +181,17 @@ func TestProofLaunchReceiptBindsIndependentGenerationAndFirstObserver(t *testing
 func TestProofLaunchReceiptPushCrashWindowConcurrentClaimsAndImmutableReplay(t *testing.T) {
 	step := &mockPassStep{name: types.StepReview}
 	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step { return []pipeline.Step{step} })
+	// The explicit reviewer is only resolved during this receipt test; keep that
+	// capability check hermetic instead of requiring Pi on the test runner PATH.
+	piBin := writeCapturingPiAgent(t, t.TempDir(), filepath.Join(t.TempDir(), "pi-argv.log"))
+	globalConfig, err := os.ReadFile(p.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	globalConfig = append(globalConfig, []byte("  pi: "+piBin+"\n")...)
+	if err := os.WriteFile(p.ConfigFile(), globalConfig, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	repo, headSHA := setupTestGitRepo(t, p, d, "proof-push-repo")
 	const generation = "generation-push-001"
 	const intent = "opaque push intent"
