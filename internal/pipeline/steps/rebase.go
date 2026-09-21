@@ -363,6 +363,9 @@ func validateSubmittedMergeParent(ctx context.Context, sctx *pipeline.StepContex
 	return nil
 }
 
+// Both cleanup paths outlive parent cancellation so a failed topology handoff
+// cannot strand a partial merge or its unvalidated commit. Their shared timeout
+// still bounds a Git command that stalls while restoring the accepted rebase.
 func abortSubmittedMerge(ctx context.Context, sctx *pipeline.StepContext, currentHead string, cause error) error {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), submittedMergeCleanupTimeout)
 	defer cancel()
