@@ -284,9 +284,11 @@ Control publication of the **generated `Intent` section**, independently of inte
 | --- | --- |
 | Type | `bool` |
 | Default | `true` (missing or `null` also preserves the default) |
-| Trust | Trusted default branch only, regardless of `allow_repo_commands`; no global setting |
+| Trust | Trusted default branch only, regardless of `allow_repo_commands`; the caller-side counterpart is the global [`intent.publish_intent`](/no-mistakes/reference/global-config/#intent) default and the per-run `axi run --no-publish-intent` flag |
 
 `false` suppresses that section in ordinary drafting, fallback output, and template appendices. It works without `pr.template` and does not otherwise enable template mode. It never removes full intent from review or PR-drafting context, changes evidence/attestation policy, or erases author-written sections named `Intent`. Unconfigured defaults remain unchanged.
+
+A contributor can keep the section off for their own runs without touching this repository policy: `axi run --no-publish-intent` records a tighten-only omission on the run, and an operator can set the global `intent.publish_intent: false` default. Both compose with this field and can only reduce publication: the trusted repository policy is the ceiling, and a caller can never publish intent on a repository whose trusted config disabled it. Neither signal changes what review, test, document, lint, or CI auto-fix prompts receive. The caller-side omission goes one step further than this repository policy: the PR-drafting turns (ordinary narrative, title-only fallback, and repository-template narrative) receive no intent text at all and draft from the diff and commit messages only, so no paraphrase of the withheld intent can reach the public PR. The intent is withheld, never scanned for: there is no output filter.
 
 This is not a privacy filter: generated narrative and other evidence can still contain sensitive information, and LLM drafting is not a confidentiality guarantee. No caller-written public-body override is introduced by this setting.
 
@@ -504,6 +506,7 @@ What that boundary protects is the gate's *declaration*, not the repository file
 
 All configured `commands.*` entries and repository gate commands are scoped to their step.
 After no-mistakes starts one of these commands, it terminates any remaining child processes from that command when the command exits, fails, or the step is cancelled.
+On Windows, cancellation first sends `CTRL_BREAK` to the command's isolated process group and allows up to three seconds for cleanup before forcibly terminating the job. A command that owns external resources should handle its runtime's break signal and exit after cleanup; in Node.js, register a `process.on('SIGBREAK', handler)` listener. If the command does not exit before the window closes, expect forced termination.
 Do not rely on a configured command to leave a background server or watcher running after it returns; keep that service inside the command lifetime or start it outside no-mistakes.
 
 ### ignore_patterns
@@ -702,29 +705,29 @@ rebase:
   strategy: merge
 ```
 
-**Opting in.** Commit that block to your **default branch** (the same copy the daemon reads `commands` and `agent` from). It takes effect on the next run of every branch in the repository; a branch cannot opt itself in or out. The default stays `rebase` for every repository that does not ask, so upgrading no-mistakes never changes the shape of history under you.
+**Opting in.** Commit that block to your **default branch** (the same copy the daemon reads `commands` and `agent` from). It takes effect on the next run of every branch in the repository; a branch cannot opt itself in or out. The default stays `rebase` for every repository that does not ask, so upgrading no-mistakes does not switch every integration to merge commits. The submitted-merge safety handoff described below is the narrow exception that can add a topology commit under the default strategy.
 
-- **`rebase` (default)** replays the branch's commits on top of the new base. This is the historical behavior and is unchanged.
+- **`rebase` (default)** ordinarily replays the branch's commits on top of the new base. When the exact submitted head is itself a merge whose second parent is still the private gate-mirror head, the Rebase step adds a topology-only merge afterward with the rebased head first and the submitted merge second; it first proves the rebased head retains the private mirror's content, then proves the topology merge leaves that tree unchanged.
 - **`merge`** integrates the base with a `git merge --no-ff` commit whose **first parent** is the head the pipeline reviewed.
 
 The two differ in what survives the integration, which matters in three places:
 
 | | `rebase` (default) | `merge` |
 |---|---|---|
-| The reviewed head after integration | rewritten; no longer exists on the branch | still on the branch, as the first parent |
-| Publication | force-push; an open PR's head is rewritten | fast-forward; the PR's head is appended to |
-| Evidence of what a conflict resolution did | none; the result is just commits | the merge commit's two parents and their merge base |
-| Cost | none | one merge commit per integration |
+| The reviewed head after integration | normally rewritten; a qualifying submitted-merge handoff keeps it as the second parent | still on the branch, as the first parent |
+| Publication | normally force-push; the qualifying handoff is fast-forward | fast-forward; the PR's head is appended to |
+| Evidence of what a conflict resolution did | ordinarily none; the qualifying handoff retains the submitted merge and proves content and tree preservation | the merge commit's two parents and their merge base |
+| Cost | ordinarily none; one topology merge for the qualifying handoff | one merge commit per integration |
 
 Integration publishes as a fast-forward under `merge`. A CI merge-conflict repair is the exception: it rebases onto the base branch whichever strategy is set, so that repair still force-pushes and still revalidates in full.
 
-**Continuity.** The CI step publishes a repair without a full revalidation cycle only when it can prove the repaired head continues the reviewed head (see [`ci.revalidate_repairs`](#cirevalidate_repairs)). Under `merge` that proof is plain ancestry, because the reviewed head is a parent. Under `rebase` there is nothing to prove it with.
+**Continuity.** The CI step publishes a repair without a full revalidation cycle only when it can prove the repaired head continues the reviewed head (see [`ci.revalidate_repairs`](#cirevalidate_repairs)). Under `merge` that proof is plain ancestry, because the reviewed head is a parent. Ordinary `rebase` still has no such ancestry proof; the qualifying submitted-merge handoff is a separate pre-review topology bridge, not a patch-identity shortcut.
 
-**Attestation.** A review attestation that binds to an exact commit SHA survives a merge, because the attested commit stays in the branch's history. A rebase rewrites every branch SHA, so the attested commit no longer exists on the branch.
+**Attestation.** A review attestation that binds to an exact commit SHA survives a merge, because the attested commit stays in the branch's history. Ordinary rebase rewrites every branch SHA; the qualifying handoff instead lets Review attest the final topology head after its tree has been proven unchanged.
 
-**Audit.** Whether a conflict resolution deleted content one side introduced is decidable from a merge commit alone - its two parents and their merge base are all the inputs - by anything, afterwards, from outside no-mistakes. A rebase leaves no such record, so the same question is unanswerable once the run ends. To match, the conflict resolver's prompt under `merge` requires an **additive** resolution: keep both sides' introduced content, and never delete what one side introduced merely to make the merge apply. Only genuinely mutually exclusive changes may supersede one another, and the agent must say which and why.
+**Audit.** Whether a conflict resolution deleted content one side introduced is decidable from a merge commit alone - its two parents and their merge base are all the inputs - by anything, afterwards, from outside no-mistakes. Ordinary rebase leaves no such record, so the same question is unanswerable once the run ends. The qualifying handoff is narrower: it joins only the exact submitted merge and current direct private mirror, requires the existing reconciliation proof that the rebased head retains the mirror's content, and requires the topology merge's tree to equal the rebased tree. A mismatched mirror receives no bridge and remains subject to the normal publication-time reconciliation guard; a matching mirror whose content did not survive is refused by that same reconciliation boundary during Rebase. To match, the conflict resolver's prompt under `merge` requires an **additive** resolution: keep both sides' introduced content, and never delete what one side introduced merely to make the merge apply. Only genuinely mutually exclusive changes may supersede one another, and the agent must say which and why.
 
-**The cost is a merge commit per integration.** On a squash-merged default branch (one commit per PR) those commits collapse at landing and never reach it. On a merge-committed one they do, so the history is a graph rather than a line.
+**The `merge` strategy costs one merge commit per integration.** The qualifying default-strategy handoff also costs one topology-only merge commit. On a squash-merged default branch (one commit per PR) those commits collapse at landing and never reach it. On a merge-committed one they do, so the history is a graph rather than a line.
 
 This value is read only from the trusted default-branch copy of this file, regardless of [`allow_repo_commands`](#allow_repo_commands). It decides whether integrating a moved base leaves auditable evidence behind, so a pushed branch must not be able to change it in either direction. A value set here wins over the operator's own [`rebase.strategy`](/no-mistakes/reference/global-config/#rebasestrategy).
 

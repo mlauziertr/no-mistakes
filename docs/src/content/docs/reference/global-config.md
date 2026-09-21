@@ -96,6 +96,7 @@ intent:
   threshold: 0.2
   slack_days: 3
   disabled_readers: []
+  # publish_intent: false # Keep the generated Intent section out of PR bodies by default
 
 test:
   evidence:
@@ -666,7 +667,8 @@ Its typed answers feed the review prompt one kind of advisory input: a ranked li
 The candidates Jev ranks are found in code: files that use the names the change defines, preferring files that use rare names over files that only share common ones, then same-directory siblings of the changed files.
 Paths matching `ignore_patterns` are never candidates.
 Jev's answer decides which candidates are listed: a candidate is listed when most of its probability mass sits at "relevant" or "essential" (a probability-weighted score threshold would demand near-certainty and never fires), and the order also weighs the code's evidence, so a file that uses a changed name is listed ahead of a same-directory sibling Jev scored the same.
-A live off/on benchmark of this assist on real cold reviews lives in `benchmarks/issue-1055/` (method, raw data, and conclusion).
+A follow-up operator-credentialed live TypeSafe run and off/on cold-review benchmark lives in `benchmarks/issue-1125/` (method, raw data, and conclusion).
+The original published method is in `benchmarks/issue-1055/`.
 
 The assist can only add to a review, never subtract.
 Complete-change coverage, the `reviewed_paths` contract, and every prompt obligation are exactly what they are with the assist off, no Jev answer can remove a file, a clause, or an obligation, and the reviewer stays a fresh, session-free invocation that never resumes the fixer session.
@@ -869,8 +871,11 @@ When enabled and no intent was supplied directly for the run, no-mistakes can re
 | `intent.threshold`        | `float`    | `0.2`   | Minimum raw match score for selecting a transcript session |
 | `intent.slack_days`       | `int`      | `3`     | Extra days to look back before the change window           |
 | `intent.disabled_readers` | `string[]` | Empty   | Transcript readers to disable                              |
+| `intent.publish_intent`   | `bool`     | `true`  | Publish the generated Intent section on PR bodies by default |
 
 Valid `disabled_readers` values are `claude`, `codex`, `opencode`, `rovodev`, `pi`, and `copilot`.
+
+`intent.publish_intent: false` is a global, operator-side default that keeps the generated `## Intent` section out of the PR body for runs started without an explicit override. It is the caller-side counterpart of the repository's trusted [`pr.publish_intent`](/no-mistakes/reference/repo-config/#prpublish_intent): both are tighten-only, the repository's trusted policy remains the ceiling a caller can never exceed, and review, test, document, lint, and CI auto-fix prompts keep the full intent. Under the caller-side omission the PR-drafting turns receive no intent text at all and draft from the diff and commit messages only; the intent is withheld from them, never scanned out of their output. A run records the folded decision (the `axi run --no-publish-intent` flag OR this global default) at start; reruns inherit it, and a mid-run config change never re-publishes. This field is global-only: a pushed branch's `.no-mistakes.yaml` cannot express it.
 
 The match score is the share of matching files mentioned in a transcript session; deleted files are ignored when the diff also contains non-deleted changes.
 All-deletion diffs still match against the deleted changed files.

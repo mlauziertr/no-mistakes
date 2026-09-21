@@ -196,7 +196,7 @@ type GlobalConfig struct {
 	// value still wins over it.
 	Rebase RebaseRaw
 	Commit GlobalCommitRaw
-	Intent IntentRaw
+	Intent GlobalIntentRaw
 	Test   TestRaw
 	// Eval is resolved at load time because it is global-only: it describes
 	// this machine's local eval corpus (disk, retention, whether review rounds
@@ -238,7 +238,7 @@ type globalConfigRaw struct {
 	CI                      CIRaw                      `yaml:"ci"`
 	Rebase                  RebaseRaw                  `yaml:"rebase"`
 	Commit                  GlobalCommitRaw            `yaml:"commit"`
-	Intent                  IntentRaw                  `yaml:"intent"`
+	Intent                  GlobalIntentRaw            `yaml:"intent"`
 	Test                    TestRaw                    `yaml:"test"`
 	Eval                    EvalRaw                    `yaml:"eval"`
 	Jev                     JevRaw                     `yaml:"jev"`
@@ -942,6 +942,30 @@ type IntentRaw struct {
 	Threshold       *float64 `yaml:"threshold"`
 	SlackDays       *int     `yaml:"slack_days"`
 	DisabledReaders []string `yaml:"disabled_readers"`
+}
+
+// GlobalIntentRaw is the global config's `intent:` block. It extends the
+// repo-level IntentRaw with the caller-side publication control, which a
+// repository config deliberately cannot express: publication policy lives in
+// the trusted `pr.publish_intent`, and the caller-side control below is owned
+// by the operator of the machine that runs the gate.
+type GlobalIntentRaw struct {
+	IntentRaw `yaml:",inline"`
+	// PublishIntent is the contributor-side, tighten-only publication
+	// preference for the generated public Intent section. `false` omits that
+	// section for runs started on this machine; it can never publish intent
+	// on a repository whose trusted `pr.publish_intent` disabled it. The full
+	// intent still reaches every step prompt except the PR-drafting turns,
+	// which then see no intent text at all. Default nil, which publishes when
+	// the repository permits it.
+	PublishIntent *bool `yaml:"publish_intent"`
+}
+
+// PublishesIntentByDefault reports whether runs started on this machine
+// publish the generated Intent section when the repository's trusted policy
+// allows it. It makes no promise about model prose.
+func (g GlobalIntentRaw) PublishesIntentByDefault() bool {
+	return g.PublishIntent == nil || *g.PublishIntent
 }
 
 // Intent is the resolved user-intent extraction config.
@@ -2983,7 +3007,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	applyRebaseOverrides(&rebase, &repo.Rebase)
 
 	intent := intentDefaults()
-	applyIntentOverrides(&intent, &global.Intent)
+	applyIntentOverrides(&intent, &global.Intent.IntentRaw)
 	applyIntentOverrides(&intent, &repo.Intent)
 
 	test := testDefaults()
