@@ -245,6 +245,18 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
 	effectiveRepoCfg := config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
+	if run.ReviewAgentJSON != nil {
+		reviewer, err := config.ParseReviewAgentJSON(*run.ReviewAgentJSON)
+		if err != nil {
+			return nil, fmt.Errorf("parse persisted reviewer selection: %w", err)
+		}
+		if reviewer != nil {
+			if run.PiProfile != nil {
+				return nil, fmt.Errorf("run has both a Pi profile and a per-run reviewer selection")
+			}
+			applyRunReviewer(cfg, reviewer)
+		}
+	}
 	// Gates are read back from the run, never re-resolved. Everything else here
 	// is deliberately re-read from the live default branch, but a gate decides
 	// which steps the run HAS: the default branch may have gained or lost one
@@ -286,6 +298,18 @@ func (m *RunManager) pinnedRunGates(runID string) ([]config.Gate, error) {
 		return nil, fmt.Errorf("pinned gates are unusable: %w", err)
 	}
 	return gates, nil
+}
+
+func applyRunReviewer(cfg *config.Config, reviewer *config.ReviewAgent) {
+	if cfg == nil || reviewer == nil {
+		return
+	}
+	roles := make(map[string]config.ReviewAgent, len(cfg.ReviewAgents)+1)
+	for role, entry := range cfg.ReviewAgents {
+		roles[role] = entry
+	}
+	roles["reviewer"] = *reviewer
+	cfg.ReviewAgents = roles
 }
 
 func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot string, lookPath func(string) (string, error), environment runenv.Overlay) (agent.Agent, error) {
@@ -787,13 +811,13 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 		baseSHA = strings.TrimSpace(params.ReconciledPreviousHead)
 	}
 	if params.LaunchNonce != "" {
-		receipt, err := m.startFreshLaunch(ctx, repo, branch, params.New, baseSHA, params.Gate, params.SkipSteps, params.Intent, params.LaunchNonce, params.ValidationGeneration, params.PRBaseBranch, "push", params.PiProfile)
+		receipt, err := m.startFreshLaunchWithReviewer(ctx, repo, branch, params.New, baseSHA, params.Gate, params.SkipSteps, params.Intent, params.LaunchNonce, params.ValidationGeneration, params.PRBaseBranch, "push", params.Reviewer, params.PiProfile)
 		if err != nil {
 			return "", err
 		}
 		return receipt.RunID, nil
 	}
-	return m.startRun(ctx, repo, branch, params.New, baseSHA, "push", params.SkipSteps, params.Intent, params.PRBaseBranch, params.PiProfile)
+	return m.startRunWithReviewer(ctx, repo, branch, params.New, baseSHA, "push", params.SkipSteps, params.Intent, params.PRBaseBranch, params.Reviewer, params.PiProfile)
 }
 
 // HandleStartFreshRun creates or replays a proof-mode launch only after
@@ -806,14 +830,55 @@ func (m *RunManager) HandleStartFreshRun(ctx context.Context, params *ipc.StartF
 	if repo == nil {
 		return ipc.LaunchReceipt{}, fmt.Errorf("unknown repo %s", params.RepoID)
 	}
-	return m.startFreshLaunch(ctx, repo, params.Branch, params.HeadSHA, "", m.paths.RepoDir(repo.ID), params.SkipSteps, params.Intent, params.LaunchNonce, params.ValidationGeneration, params.PRBaseBranch, "fresh", params.PiProfile)
+	return m.startFreshLaunchWithReviewer(ctx, repo, params.Branch, params.HeadSHA, "", m.paths.RepoDir(repo.ID), params.SkipSteps, params.Intent, params.LaunchNonce, params.ValidationGeneration, params.PRBaseBranch, "fresh", params.Reviewer, params.PiProfile)
+}
+
+func normalizeRunReviewer(reviewer *config.ReviewAgent) (*config.ReviewAgent, error) {
+	if reviewer == nil {
+		return nil, nil
+	}
+	normalized, err := config.NormalizeReviewAgent(*reviewer)
+	if err != nil {
+		return nil, err
+	}
+	return &normalized, nil
+}
+
+func runReviewerMatches(run *db.Run, requested *config.ReviewAgent) bool {
+	if run == nil {
+		return false
+	}
+	if requested == nil {
+		return true
+	}
+	if run.ReviewAgentJSON == nil {
+		return false
+	}
+	stored, err := config.ParseReviewAgentJSON(*run.ReviewAgentJSON)
+	return err == nil && config.ReviewAgentsEqual(stored, requested)
 }
 
 // startFreshLaunch owns proof identity under the branch lock. A nonce may
 // replay only its immutable submitted-head, generation, and persisted-intent
 // digest. It must never fall back to ordinary same-head reattachment.
 func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, gateDir string, skipSteps []types.StepName, intent, launchNonce, validationGeneration, prBaseBranch, trigger string, profiles ...*agentcfg.PiProfile) (ipc.LaunchReceipt, error) {
+	return m.startFreshLaunchWithReviewer(ctx, repo, branch, headSHA, baseSHA, gateDir, skipSteps, intent, launchNonce, validationGeneration, prBaseBranch, trigger, nil, profiles...)
+}
+
+func (m *RunManager) startFreshLaunchWithReviewer(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, gateDir string, skipSteps []types.StepName, intent, launchNonce, validationGeneration, prBaseBranch, trigger string, reviewer *config.ReviewAgent, profiles ...*agentcfg.PiProfile) (ipc.LaunchReceipt, error) {
 	request := agentcfg.OptionalPiProfile(profiles)
+	normalizedReviewer, err := normalizeRunReviewer(reviewer)
+	if err != nil {
+		return ipc.LaunchReceipt{}, err
+	}
+	reviewer = normalizedReviewer
+	if reviewer != nil && request != nil {
+		return ipc.LaunchReceipt{}, fmt.Errorf("per-run reviewer selection conflicts with --model/--effort Pi profile")
+	}
+	reviewerJSON, err := config.MarshalReviewAgent(reviewer)
+	if err != nil {
+		return ipc.LaunchReceipt{}, err
+	}
 	if err := request.ValidateRequest(); err != nil {
 		return ipc.LaunchReceipt{}, err
 	}
@@ -845,6 +910,9 @@ func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch
 			if !existing.PiProfile.Matches(request) {
 				return "", fmt.Errorf("conflicting launch_nonce: Pi profile differs from run pin")
 			}
+			if !runReviewerMatches(existing, reviewer) {
+				return "", fmt.Errorf("conflicting launch_nonce: reviewer selection differs from run pin")
+			}
 			if !launchPRBaseBranchMatches(existing, storedPRBaseBranch) {
 				return "", conflictingLaunchPRBaseBranch(launchNonce)
 			}
@@ -864,7 +932,7 @@ func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch
 				receipt = replayed
 				return existing.ID, nil
 			}
-			claimedRun, claimed, err := m.db.ClaimLaunchReceipt(repo.ID, branch, launchNonce, headSHA, validationGeneration, requestDigest, storedPRBaseBranch)
+			claimedRun, claimed, err := m.db.ClaimLaunchReceipt(repo.ID, branch, launchNonce, headSHA, validationGeneration, requestDigest, storedPRBaseBranch, reviewerJSON)
 			if err != nil {
 				return "", err
 			}
@@ -901,7 +969,7 @@ func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch
 				inheritedPRURL = inheritablePRURL(runs[0])
 			}
 		}
-		runID, err := m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, persistedIntent, db.RunIntentSourceAgent, launchNonce, validationGeneration, requestDigest, storedPRBaseBranch, inheritedPRURL, request)
+		runID, err := m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, persistedIntent, db.RunIntentSourceAgent, launchNonce, validationGeneration, requestDigest, storedPRBaseBranch, inheritedPRURL, reviewer, request)
 		if err != nil {
 			return "", err
 		}
@@ -915,7 +983,7 @@ func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch
 				return "", err
 			}
 		} else {
-			claimedRun, claimed, err := m.db.ClaimLaunchReceipt(repo.ID, branch, launchNonce, headSHA, validationGeneration, requestDigest, storedPRBaseBranch)
+			claimedRun, claimed, err := m.db.ClaimLaunchReceipt(repo.ID, branch, launchNonce, headSHA, validationGeneration, requestDigest, storedPRBaseBranch, reviewerJSON)
 			if err != nil {
 				return "", err
 			}
@@ -994,12 +1062,17 @@ func receiptForRun(run *db.Run, created bool) (ipc.LaunchReceipt, error) {
 	if run.LaunchNonce == nil || run.LaunchValidationGeneration == nil || run.LaunchIntentDigest == nil {
 		return ipc.LaunchReceipt{}, fmt.Errorf("run %s has no launch binding", run.ID)
 	}
+	reviewer, err := config.ParseReviewAgentJSON(valueOrEmpty(run.ReviewAgentJSON))
+	if err != nil {
+		return ipc.LaunchReceipt{}, fmt.Errorf("read run reviewer: %w", err)
+	}
 	disposition := "reused"
 	if created {
 		disposition = "created"
 	}
 	return ipc.LaunchReceipt{
 		PiProfile:            run.PiProfile,
+		Reviewer:             reviewer,
 		RunID:                run.ID,
 		Disposition:          disposition,
 		LaunchNonce:          *run.LaunchNonce,
@@ -1009,6 +1082,13 @@ func receiptForRun(run *db.Run, created bool) (ipc.LaunchReceipt, error) {
 		SubmittedHeadSHA:     *run.SubmittedHeadSHA,
 		IntentDigest:         *run.LaunchIntentDigest,
 	}, nil
+}
+
+func valueOrEmpty(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 // HandleRerun creates a new run for the latest recoverable head on a branch:
@@ -1021,6 +1101,10 @@ func receiptForRun(run *db.Run, created bool) (ipc.LaunchReceipt, error) {
 // A supplied clean caller head must match the selected head before any run
 // starts or is superseded. It never changes head selection.
 func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent, prBaseBranch, callerHeadSHA string, profiles ...*agentcfg.PiProfile) (string, error) {
+	return m.HandleRerunWithReviewer(ctx, repoID, branch, previousRunID, skipSteps, intent, prBaseBranch, callerHeadSHA, nil, profiles...)
+}
+
+func (m *RunManager) HandleRerunWithReviewer(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent, prBaseBranch, callerHeadSHA string, reviewer *config.ReviewAgent, profiles ...*agentcfg.PiProfile) (string, error) {
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
 		return "", fmt.Errorf("get repo: %w", err)
@@ -1093,11 +1177,21 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 		}
 	}
 
+	reviewer, err = normalizeRunReviewer(reviewer)
+	if err != nil {
+		return "", err
+	}
+	if reviewer == nil && agentcfg.OptionalPiProfile(profiles) == nil && selectedRun.ReviewAgentJSON != nil {
+		reviewer, err = config.ParseReviewAgentJSON(*selectedRun.ReviewAgentJSON)
+		if err != nil {
+			return "", fmt.Errorf("parse selected run reviewer: %w", err)
+		}
+	}
 	storedPRBaseBranch := strings.TrimSpace(prBaseBranch)
 	if storedPRBaseBranch == "" && selectedRun.PRBaseBranch != nil {
 		storedPRBaseBranch = strings.TrimSpace(*selectedRun.PRBaseBranch)
 	}
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, storedPRBaseBranch, inheritablePRURL(selectedRun), profiles...)
+	return m.startRunWithIntentSourceReviewer(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, storedPRBaseBranch, inheritablePRURL(selectedRun), reviewer, profiles...)
 }
 
 func inheritablePRURL(run *db.Run) string {
@@ -1171,11 +1265,11 @@ func fetchRunDefaultBranch(ctx context.Context, workDir string, repo *db.Repo) e
 
 // fetchTrustedDefaultBranchSHA imports the live default branch into a
 // caller-owned private ref on the gate. It does not rewrite origin tracking
-// refs, FETCH_HEAD, or any shared worktree ref, so a refused Pi pin cannot
+// refs, FETCH_HEAD, or any shared worktree ref, so a refused launch cannot
 // perturb an in-flight validation that must stay running.
 func fetchTrustedDefaultBranchSHA(ctx context.Context, gateDir string, repo *db.Repo) (string, error) {
 	if strings.TrimSpace(repo.DefaultBranch) == "" {
-		return "", fmt.Errorf("cannot evaluate Pi run profile: repository has no known default branch to read trusted config from")
+		return "", fmt.Errorf("cannot evaluate run configuration: repository has no known default branch to read trusted config from")
 	}
 	privateRef := fmt.Sprintf("refs/no-mistakes/pi-profile/%d-%d", os.Getpid(), time.Now().UnixNano())
 	defer func() {
@@ -1189,13 +1283,32 @@ func fetchTrustedDefaultBranchSHA(ctx context.Context, gateDir string, repo *db.
 		fetchErr = git.FetchRemoteBranchToPrivateRef(ctx, gateDir, repo.UpstreamURL, repo.DefaultBranch, privateRef)
 	}
 	if fetchErr != nil {
-		return "", fmt.Errorf("cannot evaluate Pi run profile: failed to fetch trusted default branch %q: %w", repo.DefaultBranch, fetchErr)
+		return "", fmt.Errorf("cannot evaluate run configuration: failed to fetch trusted default branch %q: %w", repo.DefaultBranch, fetchErr)
 	}
 	sha, err := git.ResolveRef(ctx, gateDir, privateRef)
 	if err != nil {
-		return "", fmt.Errorf("cannot evaluate Pi run profile: failed to resolve trusted default branch %q: %w", repo.DefaultBranch, err)
+		return "", fmt.Errorf("cannot evaluate run configuration: failed to resolve trusted default branch %q: %w", repo.DefaultBranch, err)
 	}
 	return sha, nil
+}
+
+func (m *RunManager) effectiveConfigBeforeCancel(ctx context.Context, repo *db.Repo, headSHA string, globalCfg *config.GlobalConfig) (*config.Config, error) {
+	gateDir := m.paths.RepoDir(repo.ID)
+	trustedSHA, err := fetchTrustedDefaultBranchSHA(ctx, gateDir, repo)
+	if err != nil {
+		return nil, err
+	}
+	if err := assertGateTrustedConfigReadable(ctx, gateDir, repo.DefaultBranch, trustedSHA); err != nil {
+		return nil, err
+	}
+	trustedRepoCfg := loadTrustedRepoConfig(ctx, gateDir, trustedSHA, "")
+	pushedRepoCfg, err := loadRepoConfigAtSHA(ctx, gateDir, headSHA)
+	if err != nil {
+		return nil, err
+	}
+	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
+	effective := config.EffectiveRepoConfig(pushedRepoCfg, trustedRepoCfg, allowRepoCommands)
+	return config.Merge(globalCfg, effective), nil
 }
 
 // validatePiProfileAgentsBeforeCancel loads the effective trusted repo agent
@@ -1204,45 +1317,70 @@ func fetchTrustedDefaultBranchSHA(ctx context.Context, gateDir string, repo *db.
 // A trusted default-branch Claude or mixed fallback list must fail here, not
 // after cancelActiveRuns has already stopped a healthy validation.
 func (m *RunManager) validatePiProfileAgentsBeforeCancel(ctx context.Context, repo *db.Repo, headSHA string, globalCfg *config.GlobalConfig) error {
-	gateDir := m.paths.RepoDir(repo.ID)
-	trustedSHA, err := fetchTrustedDefaultBranchSHA(ctx, gateDir, repo)
+	cfg, err := m.effectiveConfigBeforeCancel(ctx, repo, headSHA, globalCfg)
 	if err != nil {
 		return err
 	}
-	trustedRepoCfg := loadTrustedRepoConfig(ctx, gateDir, trustedSHA, "")
-	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
-	effective := config.EffectiveRepoConfig(loadRepoConfigAtSHA(ctx, gateDir, headSHA), trustedRepoCfg, allowRepoCommands)
-	return config.Merge(globalCfg, effective).ValidatePiProfileAgents()
+	return cfg.ValidatePiProfileAgents()
 }
 
-func loadRepoConfigAtSHA(ctx context.Context, dir, sha string) *config.RepoConfig {
+func (m *RunManager) validateReviewerBeforeCancel(ctx context.Context, repo *db.Repo, headSHA string, globalCfg *config.GlobalConfig, reviewer *config.ReviewAgent) error {
+	cfg, err := m.effectiveConfigBeforeCancel(ctx, repo, headSHA, globalCfg)
+	if err != nil {
+		return err
+	}
+	applyRunReviewer(cfg, reviewer)
+	ag, err := newPipelineAgent(ctx, cfg, "", exec.LookPath, runenv.Overlay{})
+	if err != nil {
+		return err
+	}
+	_ = ag.Close()
+	return nil
+}
+
+func loadRepoConfigAtSHA(ctx context.Context, dir, sha string) (*config.RepoConfig, error) {
 	if sha == "" {
-		return &config.RepoConfig{}
+		return &config.RepoConfig{}, nil
+	}
+	entry, err := git.Run(ctx, dir, "ls-tree", sha, "--", ".no-mistakes.yaml")
+	if err != nil {
+		return nil, fmt.Errorf("read pushed repository config tree: %w", err)
+	}
+	if entry == "" {
+		return &config.RepoConfig{}, nil
 	}
 	content, err := git.ShowFile(ctx, dir, sha, ".no-mistakes.yaml")
 	if err != nil {
-		return &config.RepoConfig{}
+		return nil, fmt.Errorf("read pushed repository config: %w", err)
 	}
 	cfg, err := config.LoadRepoFromBytes([]byte(content))
 	if err != nil {
-		return &config.RepoConfig{}
+		return nil, fmt.Errorf("parse pushed repository config: %w", err)
 	}
-	return cfg
+	return cfg, nil
 }
 
 // startRun creates a run, sets up a worktree, and launches pipeline execution.
 // A non-empty intent is stamped onto the run as agent-supplied, so the intent
 // step uses it instead of inferring from transcripts.
 func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, prBaseBranch string, profiles ...*agentcfg.PiProfile) (string, error) {
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent, prBaseBranch, "", profiles...)
+	return m.startRunWithReviewer(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, prBaseBranch, nil, profiles...)
+}
+
+func (m *RunManager) startRunWithReviewer(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, prBaseBranch string, reviewer *config.ReviewAgent, profiles ...*agentcfg.PiProfile) (string, error) {
+	return m.startRunWithIntentSourceReviewer(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent, prBaseBranch, "", reviewer, profiles...)
 }
 
 // startRunWithIntentSource is the common run-creation path. source is empty
 // when no intent is supplied, RunIntentSourceAgent for a new explicit
 // override, and RunIntentSourceRerun for inherited explicit intent.
 func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, prBaseBranch, inheritedPRURL string, profiles ...*agentcfg.PiProfile) (string, error) {
+	return m.startRunWithIntentSourceReviewer(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, source, prBaseBranch, inheritedPRURL, nil, profiles...)
+}
+
+func (m *RunManager) startRunWithIntentSourceReviewer(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, prBaseBranch, inheritedPRURL string, reviewer *config.ReviewAgent, profiles ...*agentcfg.PiProfile) (string, error) {
 	return m.withBranchLock(repo.ID, branch, func() (string, error) {
-		return m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, source, "", "", "", prBaseBranch, inheritedPRURL, profiles...)
+		return m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, source, "", "", "", prBaseBranch, inheritedPRURL, reviewer, profiles...)
 	})
 }
 
@@ -1257,7 +1395,7 @@ func (m *RunManager) withBranchLock(repoID, branch string, action func() (string
 
 // startRunWithIntentSourceLocked performs run creation while the caller owns
 // the repository/branch lock. Proof fields are empty for ordinary launches.
-func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, launchNonce, validationGeneration, intentDigest, prBaseBranch, inheritedPRURL string, profiles ...*agentcfg.PiProfile) (string, error) {
+func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, launchNonce, validationGeneration, intentDigest, prBaseBranch, inheritedPRURL string, reviewer *config.ReviewAgent, profiles ...*agentcfg.PiProfile) (string, error) {
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -1285,18 +1423,37 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 
 	// Resolve before cancellation, row creation or any pipeline work. A bad
 	// dispatch request must not supersede a healthy active validation.
-	// ResolvePiProfile checks the global agent list; trusted default-branch
-	// agent selection is checked next because it can still replace that list
-	// with Claude or mixed fallbacks after merge.
+	normalizedReviewer, err := normalizeRunReviewer(reviewer)
+	if err != nil {
+		trackStartFailure("invalid_reviewer")
+		return "", err
+	}
+	reviewer = normalizedReviewer
+	if reviewer != nil && agentcfg.OptionalPiProfile(profiles) != nil {
+		trackStartFailure("invalid_reviewer")
+		return "", fmt.Errorf("per-run reviewer selection conflicts with --model/--effort Pi profile")
+	}
+	reviewerJSON, err := config.MarshalReviewAgent(reviewer)
+	if err != nil {
+		trackStartFailure("invalid_reviewer")
+		return "", err
+	}
+	// Explicit selections must resolve against global and trusted repository
+	// configuration before cancellation because either can change the agents
+	// that will actually launch after merge.
 	var globalCfg *config.GlobalConfig
 	var pin *agentcfg.PiProfile
-	if request := agentcfg.OptionalPiProfile(profiles); request != nil {
+	request := agentcfg.OptionalPiProfile(profiles)
+	if reviewer != nil || request != nil {
 		var err error
 		globalCfg, err = config.LoadGlobal(m.paths.ConfigFile())
 		if err != nil {
 			trackStartFailure("load_global_config")
 			return "", fmt.Errorf("load global config: %w", err)
 		}
+	}
+	if request != nil {
+		var err error
 		pin, err = globalCfg.ResolvePiProfile(request)
 		if err != nil {
 			trackStartFailure("invalid_pi_profile")
@@ -1304,6 +1461,12 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		}
 		if err := m.validatePiProfileAgentsBeforeCancel(ctx, repo, headSHA, globalCfg); err != nil {
 			trackStartFailure("invalid_pi_profile")
+			return "", err
+		}
+	}
+	if reviewer != nil {
+		if err := m.validateReviewerBeforeCancel(ctx, repo, headSHA, globalCfg, reviewer); err != nil {
+			trackStartFailure("invalid_reviewer")
 			return "", err
 		}
 	}
@@ -1329,7 +1492,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		return "", err
 	}
 
-	run, err := m.db.InsertRunWithIntentAndLaunchNonce(repo.ID, branch, headSHA, baseSHA, runIntent, launchNonce, validationGeneration, intentDigest, storedPRBaseBranch, pin)
+	run, err := m.db.InsertRunWithIntentAndLaunchNonce(repo.ID, branch, headSHA, baseSHA, runIntent, launchNonce, validationGeneration, intentDigest, storedPRBaseBranch, reviewerJSON, pin)
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
@@ -1469,6 +1632,9 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		slog.Info("repo commands/agent loaded from default branch, not pushed branch", "run_id", run.ID, "branch", branch, "default_branch", repo.DefaultBranch)
 	}
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
+	if reviewer != nil {
+		applyRunReviewer(cfg, reviewer)
+	}
 	if run.PiProfile != nil {
 		if err := cfg.ValidatePiProfileAgents(); err != nil {
 			m.db.UpdateRunError(run.ID, err.Error())

@@ -349,7 +349,10 @@ explicit `agent` (the same harness names as `agent_config`; no `auto` or lists).
 Model and effort are optional and inherit `agent_config` for that harness when
 empty. Nonempty role values override that profile, but native
 `agent_args_override` flags still win. Model availability, credentials, and
-supported effort levels remain the harness/provider's responsibility.
+supported effort levels remain the harness/provider's responsibility. Model
+values must be slash-separated identifiers made from letters, digits, `.`,
+`_`, and `-`; empty or relative-path components, leading hyphens, URLs, and
+credential-shaped values are rejected.
 
 Both roles can use the same harness with different models. Reviews and rereviews
 always run fresh; only review fixes reuse the fixer's session when

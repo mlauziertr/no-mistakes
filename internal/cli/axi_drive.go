@@ -16,6 +16,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
@@ -121,6 +122,7 @@ func newAxiRunCmd() *cobra.Command {
 	var validationGeneration string
 	var baseBranch string
 	var model, effort string
+	var reviewer, reviewerModel, reviewerEffort string
 	var wait time.Duration
 
 	cmd := &cobra.Command{
@@ -166,6 +168,7 @@ func newAxiRunCmd() *cobra.Command {
 				"has_intent":       strings.TrimSpace(intent) != "",
 				"has_skip":         strings.TrimSpace(skipValue) != "",
 				"has_base_branch":  strings.TrimSpace(baseBranch) != "",
+				"has_reviewer":     cmd.Flags().Changed("reviewer") || cmd.Flags().Changed("reviewer-model") || cmd.Flags().Changed("reviewer-effort"),
 				"has_launch_nonce": launchNonce != "",
 			}, func() error {
 				skipSteps, err := parseSkipSteps(skipValue)
@@ -177,7 +180,14 @@ func newAxiRunCmd() *cobra.Command {
 				if err != nil {
 					return emitError(cmd, 2, err.Error())
 				}
-				return runAxiRunWithLaunchProof(cmd, autoYes, skipSteps, intent, baseBranch, launchNonce, validationGeneration, wait, profile)
+				reviewerSelection, err := reviewerFromFlags(cmd, reviewer, reviewerModel, reviewerEffort)
+				if err != nil {
+					return emitError(cmd, 2, err.Error())
+				}
+				if reviewerSelection != nil && profile != nil {
+					return emitError(cmd, 2, "--reviewer* cannot be combined with the all-duty --model/--effort Pi profile")
+				}
+				return runAxiRunWithLaunchProofAndReviewer(cmd, autoYes, skipSteps, intent, baseBranch, launchNonce, validationGeneration, wait, reviewerSelection, profile)
 			})
 		},
 	}
@@ -189,6 +199,7 @@ func newAxiRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&baseBranch, "base-branch", "", "integration branch to open the PR against for this run only (overrides pr.base_branch)")
 	bindAxiWaitFlag(cmd, &wait)
 	bindPiProfileFlags(cmd, &model, &effort)
+	bindReviewerFlags(cmd, &reviewer, &reviewerModel, &reviewerEffort)
 	return cmd
 }
 
@@ -197,7 +208,14 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 }
 
 func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, intent, baseBranch, launchNonce, validationGeneration string, wait time.Duration, profiles ...*agentcfg.PiProfile) error {
+	return runAxiRunWithLaunchProofAndReviewer(cmd, autoYes, skipSteps, intent, baseBranch, launchNonce, validationGeneration, wait, nil, profiles...)
+}
+
+func runAxiRunWithLaunchProofAndReviewer(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, intent, baseBranch, launchNonce, validationGeneration string, wait time.Duration, reviewer *config.ReviewAgent, profiles ...*agentcfg.PiProfile) error {
 	profile := agentcfg.OptionalPiProfile(profiles)
+	if reviewer != nil && profile != nil {
+		return emitError(cmd, 2, "per-run reviewer selection conflicts with the all-duty --model/--effort Pi profile")
+	}
 	if err := profile.ValidateRequest(); err != nil {
 		return emitError(cmd, 2, err.Error())
 	}
@@ -215,6 +233,10 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 		return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
 	}
 	defer env.close()
+	reviewer, err = resolveRunReviewer(env.client, reviewer)
+	if err != nil {
+		return emitError(cmd, 2, fmt.Sprintf("resolve reviewer: %v", err))
+	}
 
 	branch, err := git.CurrentBranch(ctx, ".")
 	if err != nil {
@@ -242,7 +264,7 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 		if strings.TrimSpace(validationGeneration) == "" {
 			return emitError(cmd, 2, "--validation-generation is required with --launch-nonce")
 		}
-		receipt, err := claimLaunchReceipt(env.client, env.repo.ID, branch, launchNonce, headSHA, validationGeneration, digestLaunchIntent(intent), baseBranch, profile)
+		receipt, err := claimLaunchReceiptWithReviewer(env.client, env.repo.ID, branch, launchNonce, headSHA, validationGeneration, digestLaunchIntent(intent), baseBranch, reviewer, profile)
 		if err != nil {
 			return emitError(cmd, 1, fmt.Sprintf("claim launch receipt: %v", err))
 		}
@@ -264,6 +286,9 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 		if active != nil {
 			if !active.PiProfile.Matches(profile) {
 				return emitError(cmd, 2, "active run has a different Pi profile; omit --model/--effort to reattach")
+			}
+			if reviewer != nil && !config.ReviewAgentsEqual(active.Reviewer, reviewer) {
+				return emitError(cmd, 2, "active run has a different reviewer; omit --reviewer* to reattach")
 			}
 			if err := conflictingActiveRunPRBaseBranch(active, baseBranch); err != nil {
 				return emitError(cmd, 2, err.Error(),
@@ -308,12 +333,12 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 		}
 		var err error
 		if launchNonce != "" {
-			launchReceipt, err = triggerProofRun(ctx, env, branch, headSHA, skipSteps, intent, baseBranch, launchNonce, validationGeneration, profile)
+			launchReceipt, err = triggerProofRunWithReviewer(ctx, env, branch, headSHA, skipSteps, intent, baseBranch, launchNonce, validationGeneration, reviewer, profile)
 			if err == nil {
 				runID = launchReceipt.RunID
 			}
 		} else {
-			runID, err = triggerRun(ctx, env, branch, skipSteps, intent, baseBranch, profile)
+			runID, err = triggerRunWithReviewer(ctx, env, branch, skipSteps, intent, baseBranch, reviewer, profile)
 		}
 		if err != nil {
 			if ownershipErr, ok := err.(*branchOwnershipError); ok {
@@ -538,8 +563,19 @@ func freshRunBranchOwnershipState(ctx context.Context, env *axiEnv) *branchsync.
 // no-op (the gate already had this commit). Callers must check for an existing
 // active run first (see activeRunID) and apply pre-flight guards.
 func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []types.StepName, intent, baseBranch string, profiles ...*agentcfg.PiProfile) (string, error) {
+	return triggerRunWithReviewer(ctx, env, branch, skipSteps, intent, baseBranch, nil, profiles...)
+}
+
+func triggerRunWithReviewer(ctx context.Context, env *axiEnv, branch string, skipSteps []types.StepName, intent, baseBranch string, reviewer *config.ReviewAgent, profiles ...*agentcfg.PiProfile) (string, error) {
 	profile := agentcfg.OptionalPiProfile(profiles)
 	pushOptions := append(formatSkipPushOptions(skipSteps), formatPiProfilePushOptions(profile)...)
+	reviewerOption, err := formatReviewerPushOption(reviewer)
+	if err != nil {
+		return "", err
+	}
+	if reviewerOption != "" {
+		pushOptions = append(pushOptions, reviewerOption)
+	}
 	if opt := formatIntentPushOption(intent); opt != "" {
 		pushOptions = append(pushOptions, opt)
 	}
@@ -603,6 +639,9 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 		if !run.PiProfile.Matches(profile) {
 			return "", fmt.Errorf("triggered run has a conflicting Pi profile")
 		}
+		if reviewer != nil && !config.ReviewAgentsEqual(run.Reviewer, reviewer) {
+			return "", fmt.Errorf("triggered run has a conflicting reviewer selection")
+		}
 		return run.ID, nil
 	}
 	if !shouldRerunAfterNoActiveRun(pushErr) {
@@ -614,6 +653,7 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 	var rr ipc.RerunResult
 	params := rerunParams(env.repo.ID, branch, skipSteps, intent, baseBranch)
 	params.PiProfile = profile
+	params.Reviewer = reviewer
 	params.CallerHeadSHA, err = rerunCallerHead(ctx)
 	if err != nil {
 		return "", err
@@ -625,15 +665,22 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 }
 
 func claimLaunchReceipt(client *ipc.Client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, baseBranch string, profiles ...*agentcfg.PiProfile) (*ipc.LaunchReceipt, error) {
+	return claimLaunchReceiptWithReviewer(client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, baseBranch, nil, profiles...)
+}
+
+func claimLaunchReceiptWithReviewer(client *ipc.Client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, baseBranch string, reviewer *config.ReviewAgent, profiles ...*agentcfg.PiProfile) (*ipc.LaunchReceipt, error) {
 	var result ipc.ClaimLaunchReceiptResult
 	if err := client.Call(ipc.MethodClaimLaunchReceipt, &ipc.ClaimLaunchReceiptParams{
-		RepoID: repoID, Branch: branch, LaunchNonce: launchNonce, PiProfile: agentcfg.OptionalPiProfile(profiles),
+		RepoID: repoID, Branch: branch, LaunchNonce: launchNonce, PiProfile: agentcfg.OptionalPiProfile(profiles), Reviewer: reviewer,
 		SubmittedHeadSHA: submittedHeadSHA, ValidationGeneration: validationGeneration, IntentDigest: intentDigest, PRBaseBranch: baseBranch,
 	}, &result); err != nil {
 		return nil, err
 	}
 	if result.Receipt != nil && !result.Receipt.PiProfile.Matches(agentcfg.OptionalPiProfile(profiles)) {
 		return nil, fmt.Errorf("launch receipt has a conflicting Pi profile")
+	}
+	if result.Receipt != nil && reviewer != nil && !config.ReviewAgentsEqual(result.Receipt.Reviewer, reviewer) {
+		return nil, fmt.Errorf("launch receipt has a conflicting reviewer selection")
 	}
 	return result.Receipt, nil
 }
@@ -642,8 +689,19 @@ func claimLaunchReceipt(client *ipc.Client, repoID, branch, launchNonce, submitt
 // the matching nonce-bound receipt. Ordinary active-run heuristics never prove
 // strict launch identity.
 func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent, baseBranch, launchNonce, validationGeneration string, profiles ...*agentcfg.PiProfile) (*ipc.LaunchReceipt, error) {
+	return triggerProofRunWithReviewer(ctx, env, branch, headSHA, skipSteps, intent, baseBranch, launchNonce, validationGeneration, nil, profiles...)
+}
+
+func triggerProofRunWithReviewer(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent, baseBranch, launchNonce, validationGeneration string, reviewer *config.ReviewAgent, profiles ...*agentcfg.PiProfile) (*ipc.LaunchReceipt, error) {
 	profile := agentcfg.OptionalPiProfile(profiles)
 	pushOptions := append(formatSkipPushOptions(skipSteps), formatPiProfilePushOptions(profile)...)
+	reviewerOption, err := formatReviewerPushOption(reviewer)
+	if err != nil {
+		return nil, err
+	}
+	if reviewerOption != "" {
+		pushOptions = append(pushOptions, reviewerOption)
+	}
 	pushOptions = append(pushOptions,
 		formatIntentPushOption(intent),
 		formatLaunchNoncePushOption(launchNonce),
@@ -662,7 +720,7 @@ func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, s
 		}
 		return nil, fmt.Errorf("push %q to gate: %w", branch, pushErr)
 	}
-	if receipt, err := waitForLaunchReceipt(ctx, env.client, env.repo.ID, branch, launchNonce, headSHA, validationGeneration, intent, baseBranch, triggerWaitTimeout, profile); err != nil {
+	if receipt, err := waitForLaunchReceiptWithReviewer(ctx, env.client, env.repo.ID, branch, launchNonce, headSHA, validationGeneration, intent, baseBranch, triggerWaitTimeout, reviewer, profile); err != nil {
 		return nil, err
 	} else if receipt != nil {
 		return receipt, nil
@@ -670,7 +728,7 @@ func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, s
 	var result ipc.StartFreshRunResult
 	if err := env.client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
 		RepoID: env.repo.ID, Branch: branch, HeadSHA: headSHA, SkipSteps: skipSteps,
-		Intent: intent, LaunchNonce: launchNonce, ValidationGeneration: validationGeneration, PRBaseBranch: baseBranch, PiProfile: profile,
+		Intent: intent, LaunchNonce: launchNonce, ValidationGeneration: validationGeneration, PRBaseBranch: baseBranch, PiProfile: profile, Reviewer: reviewer,
 	}, &result); err != nil {
 		return nil, fmt.Errorf("start fresh run: %w", err)
 	}
@@ -678,12 +736,16 @@ func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, s
 }
 
 func waitForLaunchReceipt(ctx context.Context, client *ipc.Client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intent, baseBranch string, timeout time.Duration, profiles ...*agentcfg.PiProfile) (*ipc.LaunchReceipt, error) {
+	return waitForLaunchReceiptWithReviewer(ctx, client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intent, baseBranch, timeout, nil, profiles...)
+}
+
+func waitForLaunchReceiptWithReviewer(ctx context.Context, client *ipc.Client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intent, baseBranch string, timeout time.Duration, reviewer *config.ReviewAgent, profiles ...*agentcfg.PiProfile) (*ipc.LaunchReceipt, error) {
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	poll := time.NewTicker(150 * time.Millisecond)
 	defer poll.Stop()
 	for {
-		receipt, err := claimLaunchReceipt(client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, digestLaunchIntent(intent), baseBranch, profiles...)
+		receipt, err := claimLaunchReceiptWithReviewer(client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, digestLaunchIntent(intent), baseBranch, reviewer, profiles...)
 		if err != nil {
 			return nil, err
 		}

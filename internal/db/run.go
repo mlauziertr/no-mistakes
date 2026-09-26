@@ -85,11 +85,14 @@ type Run struct {
 	PRBaseBranch *string
 	// PiProfile is immutable launch selection; nil retains legacy live config.
 	PiProfile *agentcfg.PiProfile
-	CreatedAt int64
-	UpdatedAt int64
+	// ReviewAgentJSON is an immutable per-run reviewer override. A nil value
+	// retains the live/global review-agent selection for legacy launches.
+	ReviewAgentJSON *string
+	CreatedAt       int64
+	UpdatedAt       int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, pi_profile, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, pi_profile, review_agent_json, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
@@ -102,7 +105,7 @@ func scanRun(row interface {
 		&r.CustodyReturnedAt, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
 		&r.LaunchNonce, &r.LaunchValidationGeneration, &r.LaunchIntentDigest, &r.LaunchReceiptClaimedAt,
-		&r.PRBaseBranch, &r.PiProfile,
+		&r.PRBaseBranch, &r.PiProfile, &r.ReviewAgentJSON,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
 }
@@ -123,13 +126,13 @@ func (d *DB) InsertRun(repoID, branch, headSHA, baseSHA string) (*Run, error) {
 }
 
 func (d *DB) InsertRunWithIntent(repoID, branch, headSHA, baseSHA string, intent *RunIntent, prBaseBranch string) (*Run, error) {
-	return d.InsertRunWithIntentAndLaunchNonce(repoID, branch, headSHA, baseSHA, intent, "", "", "", prBaseBranch)
+	return d.InsertRunWithIntentAndLaunchNonce(repoID, branch, headSHA, baseSHA, intent, "", "", "", prBaseBranch, "")
 }
 
 // InsertRunWithIntentAndLaunchNonce persists an optional proof binding. The
 // partial unique index remains the duplicate defense across daemon processes;
 // callers additionally serialize selection under their branch lock.
-func (d *DB) InsertRunWithIntentAndLaunchNonce(repoID, branch, headSHA, baseSHA string, intent *RunIntent, launchNonce, validationGeneration, intentDigest, prBaseBranch string, profiles ...*agentcfg.PiProfile) (*Run, error) {
+func (d *DB) InsertRunWithIntentAndLaunchNonce(repoID, branch, headSHA, baseSHA string, intent *RunIntent, launchNonce, validationGeneration, intentDigest, prBaseBranch, reviewAgentJSON string, profiles ...*agentcfg.PiProfile) (*Run, error) {
 	pin := agentcfg.OptionalPiProfile(profiles)
 	if err := pin.Validate(); err != nil {
 		return nil, err
@@ -166,9 +169,13 @@ func (d *DB) InsertRunWithIntentAndLaunchNonce(repoID, branch, headSHA, baseSHA 
 	if prBaseBranch != "" {
 		r.PRBaseBranch = &prBaseBranch
 	}
+	reviewAgentJSON = strings.TrimSpace(reviewAgentJSON)
+	if reviewAgentJSON != "" {
+		r.ReviewAgentJSON = &reviewAgentJSON
+	}
 	_, err := d.sql.Exec(
-		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, status, pr_state, intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, pr_base_branch, pi_profile, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.NoMistakesVersion, r.NoMistakesBuildSHA, r.Status, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.LaunchNonce, r.LaunchValidationGeneration, r.LaunchIntentDigest, r.PRBaseBranch, r.PiProfile, r.CreatedAt, r.UpdatedAt,
+		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, status, pr_state, intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, pr_base_branch, pi_profile, review_agent_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.NoMistakesVersion, r.NoMistakesBuildSHA, r.Status, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.LaunchNonce, r.LaunchValidationGeneration, r.LaunchIntentDigest, r.PRBaseBranch, r.PiProfile, r.ReviewAgentJSON, r.CreatedAt, r.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert run: %w", err)
@@ -331,7 +338,7 @@ func (d *DB) GetRunByLaunchNonce(repoID, branch, launchNonce string) (*Run, erro
 // this caller is its first observer. The expected immutable receipt binding,
 // including an explicit PR base branch, is part of the UPDATE predicate, so a
 // conflicting observer cannot consume `created`.
-func (d *DB) ClaimLaunchReceipt(repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch string, profiles ...*agentcfg.PiProfile) (*Run, bool, error) {
+func (d *DB) ClaimLaunchReceipt(repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch, reviewAgentJSON string, profiles ...*agentcfg.PiProfile) (*Run, bool, error) {
 	request := agentcfg.OptionalPiProfile(profiles)
 	if err := request.ValidateRequest(); err != nil {
 		return nil, false, err
@@ -341,6 +348,7 @@ func (d *DB) ClaimLaunchReceipt(repoID, branch, launchNonce, submittedHeadSHA, v
 		model, effort = request.Model, string(request.Effort)
 	}
 	prBaseBranch = strings.TrimSpace(prBaseBranch)
+	reviewAgentJSON = strings.TrimSpace(reviewAgentJSON)
 	for {
 		r := &Run{}
 		err := scanRun(d.sql.QueryRow(
@@ -350,9 +358,10 @@ func (d *DB) ClaimLaunchReceipt(repoID, branch, launchNonce, submittedHeadSHA, v
 			   AND (? = '' OR pr_base_branch = ?)
 			   AND (? = '' OR json_extract(pi_profile, '$.model') = ?)
 			   AND (? = '' OR json_extract(pi_profile, '$.effort') = ?)
+			   AND (? = '' OR COALESCE(review_agent_json, '') = ?)
 			   AND launch_receipt_claimed_at IS NULL
 			 RETURNING `+runColumns,
-			now(), repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch, prBaseBranch, model, model, effort, effort,
+			now(), repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch, prBaseBranch, model, model, effort, effort, reviewAgentJSON, reviewAgentJSON,
 		), r)
 		if err == nil {
 			return r, true, nil
@@ -364,7 +373,11 @@ func (d *DB) ClaimLaunchReceipt(repoID, branch, launchNonce, submittedHeadSHA, v
 		if err != nil {
 			return nil, false, err
 		}
-		if r == nil || !r.PiProfile.Matches(request) || r.LaunchReceiptClaimedAt != nil ||
+		storedReviewerJSON := ""
+		if r != nil && r.ReviewAgentJSON != nil {
+			storedReviewerJSON = *r.ReviewAgentJSON
+		}
+		if r == nil || !r.PiProfile.Matches(request) || (reviewAgentJSON != "" && storedReviewerJSON != reviewAgentJSON) || r.LaunchReceiptClaimedAt != nil ||
 			r.SubmittedHeadSHA == nil || *r.SubmittedHeadSHA != submittedHeadSHA ||
 			r.LaunchValidationGeneration == nil || *r.LaunchValidationGeneration != validationGeneration ||
 			r.LaunchIntentDigest == nil || *r.LaunchIntentDigest != intentDigest ||

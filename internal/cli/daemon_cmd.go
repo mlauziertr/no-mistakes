@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -125,6 +126,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			reviewer, err := parseReviewerPushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
 			reconciledPreviousHead, err := parseReconciledPreviousHeadPushOptions(pushOptions)
 			if err != nil {
 				return err
@@ -157,6 +162,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				ValidationGeneration:   validationGeneration,
 				PRBaseBranch:           prBaseBranch,
 				PiProfile:              piProfile,
+				Reviewer:               reviewer,
 				ReconciledPreviousHead: reconciledPreviousHead,
 			}, &result)
 		},
@@ -225,6 +231,7 @@ const intentPushOptionPrefix = "no-mistakes.intent="
 const (
 	launchNoncePushOptionPrefix          = "no-mistakes.launch-nonce="
 	validationGenerationPushOptionPrefix = "no-mistakes.validation-generation="
+	reviewerPushOptionPrefix             = "no-mistakes.reviewer="
 )
 
 func formatLaunchNoncePushOption(nonce string) string {
@@ -248,6 +255,27 @@ func parseLaunchNoncePushOptions(options []string) (string, error) {
 
 func parseValidationGenerationPushOptions(options []string) (string, error) {
 	return parseOpaquePushOptions(options, validationGenerationPushOptionPrefix, "validation generation")
+}
+
+func formatReviewerPushOption(reviewer *config.ReviewAgent) (string, error) {
+	selection, err := config.MarshalReviewAgent(reviewer)
+	if err != nil {
+		return "", err
+	}
+	return formatOpaquePushOption(reviewerPushOptionPrefix, selection), nil
+}
+
+func parseReviewerPushOptions(options []string) (*config.ReviewAgent, error) {
+	for _, option := range options {
+		if encoded, ok := strings.CutPrefix(option, reviewerPushOptionPrefix); ok && encoded == "" {
+			return nil, fmt.Errorf("reviewer selection push option must not be empty")
+		}
+	}
+	selection, err := parseOpaquePushOptions(options, reviewerPushOptionPrefix, "reviewer selection")
+	if err != nil {
+		return nil, err
+	}
+	return config.ParseReviewAgentJSON(selection)
 }
 
 // parseOpaquePushOptions rejects conflicting duplicates rather than selecting
